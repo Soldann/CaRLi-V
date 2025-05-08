@@ -10,7 +10,7 @@ class RadarProcessor(Node):
         self.subscription = self.create_subscription(
             Image, '/radar_ADC', self.image_callback, 10)
         self.rfft_subscriber = self.create_subscription(
-            Image, '/radar_RFFT_tx2_rx1', self.RFFT_callback, 10)
+            Image, '/radar_RFFT_tx2_rx4', self.RFFT_callback, 10)
         self.publisher = self.create_publisher(Image, '/range_azimuth', 10)
         self.rfft_publisher = self.create_publisher(Image, '/RFFT', 10)
 
@@ -35,7 +35,19 @@ class RadarProcessor(Node):
         try:
             # Convert ROS Image to NumPy array
             np_image = np.frombuffer(msg.data, dtype=np.int16).reshape((msg.height, msg.width, 2))
-            adc_data = np_image.reshape(32, 3, 4, 128, 2)
+            adc_data = np_image.reshape(32, 12, 128, 2)
+
+            # Assuming adc_data has shape (32, 12, 128, 2)
+            new_data = np.zeros((32, 2, 8, 128, 2))  # Create new structured array
+
+            # Extract relevant elements
+            new_data[:, 0, :, :, :] = adc_data[:, [0,1,2,3,8,9,10,11], :, :]  # First row
+            new_data[:, 1, 2:6, :, :] = adc_data[:, [4,5,6,7], :, :]  # Second row (padded in middle)
+
+            # Shape is now (32, 2, 8, 128, 2)
+            print("New array shape:", new_data.shape)
+            adc_data = new_data
+
             adc_complex = adc_data[..., 0] + 1j * adc_data[..., 1]
 
             # Process the radar ADC image into range-azimuth representation
@@ -65,31 +77,32 @@ class RadarProcessor(Node):
         doppler_fft = np.fft.fftshift(np.fft.fft(range_fft * window, axis=0), axes=0)
 
         # Angle FFT
-        padded_range_fft = np.pad(doppler_fft, pad_width=[(0, 0), (0, 10),  (0, 0), (0, 0)], mode='constant')
-        azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft, axis=2), axes=2)
-        padded_range_fft = np.pad(azimuth_fft, pad_width=[(0, 0), (0, 0),  (0, 10), (0, 0)], mode='constant')
-        azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft, axis=3), axes=3)
+        padded_range_fft = np.pad(doppler_fft, pad_width=[(0, 0), (0, 18),  (0, 42), (0, 0)], mode='constant')
+        window = windows.taylor(50, 6, 55) # N is the number of samples
+        window = window[np.newaxis, np.newaxis, :, np.newaxis]
+        azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft * window, axis=2), axes=2)
+        # window = np.outer(windows.hamming(20), windows.hamming(50)) # N is the number of samples
+        # window = window[np.newaxis, :, :, np.newaxis]
+        # azimuth_fft = np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=(1,2))
+        # padded_range_fft = np.pad(azimuth_fft, pad_width=[(0, 0), (0, 0),  (0, 10), (0, 0)], mode='constant')
+        # azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft, axis=3), axes=3)
 
 
         # radar_cube = azimuth_fft
         # Collapse data into a 2D slice, collapsing over the azimuth dimension
-        collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)), axis=1), axis=1)  # Sum over azimuth dimension
-
+        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)), axis=1), axis=1)  # Sum over azimuth dimension
+        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)+1), axis=1), axis=1)  # Sum over azimuth dimension
         
+        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0).T
+
+        collapsed_range_doppler = np.flip(np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1), axis=1), axis=0), axis=1)  # Sum over azimuth dimension
+
         if self.RFFT_image is not None:
             out_msg = self.create_ros_image(np.abs(doppler_fft[:, 1, 0, :].T[::-1]), msg.header)
             self.rfft_publisher.publish(out_msg)
             out_msg = self.create_ros_image(np.abs(self.RFFT_image), msg.header)
             self.rfft_raw_publisher.publish(out_msg)
             print(np.isclose(np.abs(doppler_fft[:, 1, 0, :].T[::-1]), np.abs(self.RFFT_image)).all())
-        # plt.figure(figsize=(20, 3))
-        # plt.imshow(collapsed_range_doppler, aspect='auto', origin='lower', cmap='viridis')
-        # plt.colorbar(label='Magnitude (dB)')
-        # plt.xlabel('Range Bin')
-        # plt.ylabel('Doppler Bin')
-        # plt.title(f'Range-Azimuth Map at Doppler Bin {doppler_bin}')
-        # plt.tight_layout()
-        # plt.show()
 
         # Normalize for visualization
         return collapsed_range_doppler
