@@ -11,10 +11,8 @@ class RadarProcessor(Node):
             Image, '/radar_ADC', self.image_callback, 10)
         self.rfft_subscriber = self.create_subscription(
             Image, '/radar_RFFT_tx2_rx4', self.RFFT_callback, 10)
-        self.publisher = self.create_publisher(Image, '/range_azimuth', 10)
-        self.rfft_publisher = self.create_publisher(Image, '/RFFT', 10)
 
-        self.rfft_raw_publisher = self.create_publisher(Image, '/RFFT_RAW', 10)
+        self.ros_publishers = {}
 
         self.get_logger().info('Radar Processor Node Started')
 
@@ -51,17 +49,32 @@ class RadarProcessor(Node):
             adc_complex = adc_data[..., 0] + 1j * adc_data[..., 1]
 
             # Process the radar ADC image into range-azimuth representation
-            range_azimuth_image = self.process_image(adc_complex, msg)
+            output_images = self.process_image(adc_complex)
 
             # Convert processed image back to ROS Image message
-            out_msg = self.create_ros_image(range_azimuth_image.T[::-1], msg.header)
-            self.publisher.publish(out_msg)
-            self.get_logger().info('Published processed image')
+            for topic, image in output_images.items():
+                if topic not in self.ros_publishers:
+                    self.get_logger().info('Adding new topic publisher ' + topic)
+                    self.ros_publishers[topic] = self.create_publisher(Image, topic, 10)
+                out_msg = self.create_ros_image(image, msg.header)
+                self.ros_publishers[topic].publish(out_msg)
+
+            self.get_logger().info('Published processed images')
 
         except Exception as e:
             self.get_logger().error(f'Error processing image: {str(e)}')
 
-    def process_image(self, current_radar_frame, msg):
+    def process_image(self, current_radar_frame):
+        """
+        Take Radar ADC data and process it into various images.
+        Args:
+            current_radar_frame (np.ndarray): Radar ADC data of dimensions (doppler, elevation, azimuth, range)
+        Returns:
+            output_images (dict): Dictionary of processed images, where keys are topic names and values are the corresponding images. 
+                                    Publishers will be automatically created for each topic if they don't already exist.
+        """
+        output_images = {}
+
         # Compute magnitude (range representation)
         # Range FFT
         window = windows.gaussian(128, 1/4*128)  # N is the number of samples
@@ -100,17 +113,14 @@ class RadarProcessor(Node):
         
         # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0).T # Azimuth-Elevation Plot
 
-        collapsed_range_doppler = np.flip(np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=1), axis=0), axis=1)  # Range-Azimuth Plot
+        output_images["/range_azimuth"] = np.flip(np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=1), axis=0), axis=1).T[::-1]  # Range-Azimuth Plot
 
         if self.RFFT_image is not None:
-            out_msg = self.create_ros_image(np.abs(doppler_fft[:, 1, 0, :].T[::-1]), msg.header)
-            self.rfft_publisher.publish(out_msg)
-            out_msg = self.create_ros_image(np.abs(self.RFFT_image), msg.header)
-            self.rfft_raw_publisher.publish(out_msg)
-            print(np.isclose(np.abs(doppler_fft[:, 1, 0, :].T[::-1]), np.abs(self.RFFT_image)).all())
+            output_images["/RFFT"] = np.abs(doppler_fft[:, 1, 0, :].T[::-1])
+            output_images["/RFFT_RAW"] = np.abs(self.RFFT_image)
+            print(np.isclose(output_images["/RFFT"], output_images["/RFFT_RAW"]).all())
 
-        # Normalize for visualization
-        return collapsed_range_doppler
+        return output_images
 
     def create_ros_image(self, np_array, header):
         msg = Image()
