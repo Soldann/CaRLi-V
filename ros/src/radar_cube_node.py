@@ -78,24 +78,29 @@ class RadarProcessor(Node):
 
         # Angle FFT
         padded_range_fft = np.pad(doppler_fft, pad_width=[(0, 0), (0, 18),  (0, 42), (0, 0)], mode='constant')
-        window = windows.taylor(50, 6, 55) # N is the number of samples
-        window = window[np.newaxis, np.newaxis, :, np.newaxis]
-        azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft * window, axis=2), axes=2)
-        # window = np.outer(windows.hamming(20), windows.hamming(50)) # N is the number of samples
-        # window = window[np.newaxis, :, :, np.newaxis]
-        # azimuth_fft = np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=(1,2))
-        # padded_range_fft = np.pad(azimuth_fft, pad_width=[(0, 0), (0, 0),  (0, 10), (0, 0)], mode='constant')
-        # azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft, axis=3), axes=3)
 
+        # Do 1D FFT on the azimuth dimension
+
+        # window = windows.taylor(50, 6, 55) # N is the number of samples
+        # window = window[np.newaxis, np.newaxis, :, np.newaxis]
+        # azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft * window, axis=2), axes=2)
+
+        # Do 2D FFT on the azimuth-elevation dimension
+
+        window = np.outer(windows.hamming(20), windows.hamming(50)) # N is the number of samples
+        window = window[np.newaxis, :, :, np.newaxis]
+        azimuth_fft = np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=(1,2))
 
         # radar_cube = azimuth_fft
-        # Collapse data into a 2D slice, collapsing over the azimuth dimension
-        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)), axis=1), axis=1)  # Sum over azimuth dimension
-        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)+1), axis=1), axis=1)  # Sum over azimuth dimension
-        
-        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0).T
 
-        collapsed_range_doppler = np.flip(np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1), axis=1), axis=0), axis=1)  # Sum over azimuth dimension
+        # Collapse data into a 2D slice for visualization
+
+        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)), axis=1), axis=1)  # Range-Doppler Plot
+        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft)+1), axis=1), axis=1)  # Range-Doppler Plot with anti-logarithm
+        
+        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0).T # Azimuth-Elevation Plot
+
+        collapsed_range_doppler = np.flip(np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=1), axis=0), axis=1)  # Range-Azimuth Plot
 
         if self.RFFT_image is not None:
             out_msg = self.create_ros_image(np.abs(doppler_fft[:, 1, 0, :].T[::-1]), msg.header)
