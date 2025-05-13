@@ -57,7 +57,7 @@ class RadarProcessor(Node):
                 if topic not in self.ros_publishers:
                     self.get_logger().info('Adding new topic publisher ' + topic)
                     self.ros_publishers[topic] = self.create_publisher(Image, topic, 10)
-                out_msg = self.create_ros_image(image, msg.header)
+                out_msg = self.create_ros_image(image*256/32, msg.header, False)
                 self.ros_publishers[topic].publish(out_msg)
 
             self.get_logger().info('Published processed images')
@@ -107,59 +107,25 @@ class RadarProcessor(Node):
 
         window = np.outer(windows.hamming(target_elevation_bins), windows.hamming(target_azimuth_bins)) # N is the number of samples
         window = window[np.newaxis, :, :, np.newaxis]
-        azimuth_fft = np.fft.fftshift(np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=1), axes=2)
+        angle_fft = np.fft.fftshift(np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=1), axes=2)
 
-        # radar_cube = azimuth_fft
+        # VELOCITY COMPUTATION
+        # Step 1: Compute magnitude in dB
+        magnitude_db = 20 * np.log10(np.abs(angle_fft) + 1e-12)
 
-        # Collapse data into a 2D slice for visualization
+        # Step 2: Find max Doppler bin index for each azimuth-range pair
+        velocity_cube = np.argmax(magnitude_db, axis=0) - 16  # shape: (elevation, azimuth, range)
 
-
-        # VELOCITY PLOT
-        # # Step 1: Compute magnitude in dB
-        # magnitude_db = np.mean(20 * np.log10(np.abs(azimuth_fft) + 1e-12), axis=1)
-
-        # # Step 3: Find max Doppler bin index for each azimuth-range pair
-        # collapsed_doppler = np.argmax(magnitude_db, axis=0)  # shape: (azimuth, range)
-
-        # # Step 4: Compute total intensity at max bin (for thresholding)
-        # # max_magnitude_linear = np.max(np.mean(np.abs(azimuth_fft), axis=1), axis=0)  # shape: (azimuth, range)
-
-        # output_images['/velocity'] = collapsed_doppler.copy()
-
-        # # Step 5: Thresholding — set weak points to center bin (index 16)
-        # min_intensity_dB = magnitude_db.max() - 60 
-        # # min_intensity_linear = 10**(min_intensity_dB / 20)
-        # collapsed_doppler[np.max(magnitude_db, axis=0) < min_intensity_dB] = 16  # Assign center bin for weak detections
-        # output_images['/velocity_thresh'] = collapsed_doppler
-
-        # RANGE-DOPPLER PLOT
-        # collapsed_range_doppler = np.mean(np.mean(20 * np.log10(np.abs(doppler_fft) + 1), axis=1), axis=1).T[::-1]  # Range-Doppler Plot
-        # output_images['/range_doppler'] = collapsed_range_doppler
-
-        # # Threshold: Clip background below a dynamic floor (e.g., max - 60 dB)
-        # threshold_db = collapsed_range_doppler.max() - 45
-        # collapsed_range_doppler = np.clip(collapsed_range_doppler, a_min=threshold_db, a_max=None)
-        # output_images['/range_doppler_thresholding'] = collapsed_range_doppler
-
-        # # Median filter to suppress speckle noise
-        # output_images['/range_doppler_thresholding_median'] = median_filter(collapsed_range_doppler, size=(3, 3))  # You can try (5, 5) too
+        # Step 3: Thresholding — set weak points to center bin (index 16)
+        min_intensity_dB = magnitude_db.max() - 5
+        velocity_cube[np.max(magnitude_db, axis=0) < min_intensity_dB] = 0  # Assign center bin for weak detections
         
-        radar_cube_db = 20 * np.log10(np.abs(azimuth_fft)+1e-6)
-        # output_images["/range_elevation"] = self.apply_threshold(np.mean(np.mean(radar_cube_db, axis=2), axis=0), 5)
-        output_images["/range_azimuth"] = self.apply_threshold(np.mean(np.mean(radar_cube_db, axis=1), axis=0), 5)
-        output_images["/azimuth_elevation"] = self.apply_threshold(np.mean(np.mean(radar_cube_db[5:-5,:,:,20:-20], axis=-1), axis=0), 1)[::-1, ::-1]
+        # np.where(np.max(velocity_cube, axis=-1) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
+        # np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
 
-        # output_images["/range_azimuth"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=0)
-        # output_images["/azimuth_doppler"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=-1)
-        # output_images["/azimuth_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0)
-        # output_images["/range_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=2), axis=0)
-        # output_images["/doppler_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=-1).T
-
-
-        # if self.RFFT_image is not None:
-        #     output_images["/RFFT"] = np.abs(doppler_fft[:, 1, 0, :].T[::-1])
-        #     output_images["/RFFT_RAW"] = np.abs(self.RFFT_image)
-        #     print(np.isclose(output_images["/RFFT"], output_images["/RFFT_RAW"]).all())
+        output_images['velocity_azimuth_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))[::-1, ::-1] + 16
+        output_images['velocity_range_azimuth'] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0)) + 16
+        output_images['velocity_range_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=1)) < np.abs(np.min(velocity_cube, axis=1)), np.min(velocity_cube, axis=1), np.max(velocity_cube, axis=1)) + 16
 
         return output_images
     
@@ -188,14 +154,17 @@ class RadarProcessor(Node):
         scaled_image = (image - min_val) / (max_val - min_val) * 255
         return scaled_image.astype(np.uint8)
 
-    def create_ros_image(self, np_array, header):
+    def create_ros_image(self, np_array, header, scale_image=True):
         msg = Image()
         msg.header = header
         msg.height, msg.width = np_array.shape
-        msg.encoding = '16UC1'
+        msg.encoding = 'mono8'
         msg.is_bigendian = 0
         msg.step = msg.width
-        msg.data = self.scale_image(np_array).astype(np.uint16).tobytes()
+        if scale_image:
+            msg.data = self.scale_image(np_array).tobytes()
+        else:
+            msg.data = np_array.astype(np.uint8).tobytes()
         return msg
 
 def main(args=None):
