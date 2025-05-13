@@ -93,13 +93,21 @@ class RadarProcessor(Node):
         doppler_fft = np.fft.fftshift(np.fft.fft(range_fft * window, axis=0), axes=0)
 
         # Angle FFT
-        padded_range_fft = np.pad(doppler_fft, pad_width=[(0, 0), (0, 18),  (0, 42), (0, 0)], mode='constant')
+        target_azimuth_bins = 50
+        target_elevation_bins = 20
+        padded_range_fft = np.pad(doppler_fft,
+                                  pad_width=[(0, 0),
+                                             (0, target_elevation_bins-doppler_fft.shape[1]),
+                                             (0, target_azimuth_bins-doppler_fft.shape[2]),
+                                             (0, 0)],
+                                  mode='constant'
+                                )
 
         # Do 2D FFT on the azimuth-elevation dimension
 
-        window = np.outer(windows.hamming(20), windows.hamming(50)) # N is the number of samples
+        window = np.outer(windows.hamming(target_elevation_bins), windows.hamming(target_azimuth_bins)) # N is the number of samples
         window = window[np.newaxis, :, :, np.newaxis]
-        azimuth_fft = np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=(1,2))
+        azimuth_fft = np.fft.fftshift(np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=1), axes=2)
 
         # radar_cube = azimuth_fft
 
@@ -135,10 +143,11 @@ class RadarProcessor(Node):
 
         # # Median filter to suppress speckle noise
         # output_images['/range_doppler_thresholding_median'] = median_filter(collapsed_range_doppler, size=(3, 3))  # You can try (5, 5) too
-
-        output_images["/range_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=2), axis=0)
-        output_images["/range_azimuth"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=0)
-        output_images["/azimuth_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0)
+        
+        radar_cube_db = 20 * np.log10(np.abs(azimuth_fft)+1e-6)
+        # output_images["/range_elevation"] = self.apply_threshold(np.mean(np.mean(radar_cube_db, axis=2), axis=0), 5)
+        output_images["/range_azimuth"] = self.apply_threshold(np.mean(np.mean(radar_cube_db, axis=1), axis=0), 5)
+        output_images["/azimuth_elevation"] = self.apply_threshold(np.mean(np.mean(radar_cube_db[5:-5,:,:,20:-20], axis=-1), axis=0), 1)[::-1, ::-1]
 
         # output_images["/range_azimuth"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=0)
         # output_images["/azimuth_doppler"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=-1)
@@ -153,6 +162,18 @@ class RadarProcessor(Node):
         #     print(np.isclose(output_images["/RFFT"], output_images["/RFFT_RAW"]).all())
 
         return output_images
+    
+    def apply_threshold(self, image, threshold):
+        """
+        Apply a threshold to the image.
+        Args:
+            image (np.ndarray): Input image.
+            threshold (float): Threshold value.
+        Returns:
+            np.ndarray: Thresholded image.
+        """
+        threshold_db = image.max() - threshold
+        return np.clip(image, a_min=threshold_db, a_max=None)
     
     def scale_image(self, image):
         """
