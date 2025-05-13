@@ -95,21 +95,11 @@ class RadarProcessor(Node):
         # Angle FFT
         padded_range_fft = np.pad(doppler_fft, pad_width=[(0, 0), (0, 18),  (0, 42), (0, 0)], mode='constant')
 
-        # Do 1D FFT on the azimuth dimension
-
-        window = windows.taylor(50, 6, 55) # N is the number of samples
-        window = window[np.newaxis, np.newaxis, :, np.newaxis]
-        azimuth_fft = np.fft.fftshift(np.fft.fft(padded_range_fft * window, axis=2), axes=2)
-
-        window = windows.taylor(20, 6, 55) # N is the number of samples
-        window = window[np.newaxis, :, np.newaxis, np.newaxis]
-        elevation_fft = np.fft.fftshift(np.fft.fft(azimuth_fft * window, axis=1), axes=1)
-
         # Do 2D FFT on the azimuth-elevation dimension
 
         window = np.outer(windows.hamming(20), windows.hamming(50)) # N is the number of samples
         window = window[np.newaxis, :, :, np.newaxis]
-        azimuth_fft_2d = np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=(1,2))
+        azimuth_fft = np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=(1,2))
 
         # radar_cube = azimuth_fft
 
@@ -146,14 +136,9 @@ class RadarProcessor(Node):
         # # Median filter to suppress speckle noise
         # output_images['/range_doppler_thresholding_median'] = median_filter(collapsed_range_doppler, size=(3, 3))  # You can try (5, 5) too
 
-
+        output_images["/range_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=2), axis=0)
         output_images["/range_azimuth"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=0)
-        output_images["/range_azimuth_21d"] = (np.mean(np.mean(20 * np.log10(np.abs(elevation_fft)+1e-6), axis=1), axis=0))
-        output_images["/range_azimuth_2d"] = (np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft_2d)+1e-6), axis=1), axis=0))
-        print(np.max(output_images["/range_azimuth"]), np.max(output_images["/range_azimuth_21d"]), np.max(output_images["/range_azimuth_2d"]))
-        output_images["/range_azimuth_diff"] = np.abs(output_images["/range_azimuth"] - output_images["/range_azimuth_2d"])
-        output_images["/range_azimuth_1d21d_diff"] = np.abs(output_images["/range_azimuth"] - output_images["/range_azimuth_21d"])
-        output_images["/range_azimuth_2d_diff"] = np.abs(output_images["/range_azimuth_21d"] - output_images["/range_azimuth_2d"])
+        output_images["/azimuth_elevation"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)), axis=-1), axis=0)
 
         # output_images["/range_azimuth"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=0)
         # output_images["/azimuth_doppler"] = np.mean(np.mean(20 * np.log10(np.abs(azimuth_fft)+1e-6), axis=1), axis=-1)
