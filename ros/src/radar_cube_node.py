@@ -5,13 +5,14 @@ from sensor_msgs.msg import Image, PointCloud2, PointField
 import scipy.signal.windows as windows
 from scipy.ndimage import median_filter
 import struct
+from utils import cartesian_to_polar, polar_to_cartesian
 import numpy as np
 
 class RadarProcessor(Node):
     def __init__(self):
         super().__init__('radar_processor')
         self.adc_subscriber = self.create_subscription(
-            Image, '/radar_ADC', self.image_callback, 10)
+            Image, '/radar_ADC', self.radar_callback, 10)
         self.lidar_subscriber = self.create_subscription(
             PointCloud2, '/lidar_points', self.lidar_callback, 10)
 
@@ -20,6 +21,41 @@ class RadarProcessor(Node):
         self.get_logger().info('Radar Processor Node Started')
 
         self.lidar_point_publisher = self.create_publisher(PointCloud2, '/lidar_points_with_radial_velocity', 10)
+
+        # Compute RADAR config
+        self.radar_config = {
+            'num_tx': 3,
+            'num_rx': 4,
+            'num_adc_samples': 128,
+            'num_chirps': 32,
+            'adc_sample_rate': 2e3,  # 2 MHz
+            'chirp_slope': 49.97,  # MHz/us
+            'sweep_repetition_time': 147,  # us
+            'start_freq': 60.095,  # GHz
+        }
+
+        # speed of wave propagation
+        c = 299792458 # m/s
+        # compute ADC sample period T_c in msec
+        adc_sample_period = 1 / self.radar_config['adc_sample_rate'] * self.radar_config['num_adc_samples'] # msec
+        # next compute the Bandwidth in GHz
+        bandwidth = adc_sample_period * self.radar_config['chirp_slope'] # GHz
+        # Coompute range resolution in meters
+        self.range_resolution = c / (2 * (bandwidth * 1e9)) # meters
+        # Compute max range
+        self.max_range = self.range_resolution * self.radar_config['num_adc_samples'] # meters
+
+        # compute center frequency in GHz
+        center_freq = (self.radar_config['start_freq'] + bandwidth/2) # GHz
+        # compute center wavelength 
+        lmbda = c/(center_freq * 1e9) # meters
+        # interval for an entire chirp including deadtime
+        chirp_interval = self.radar_config['sweep_repetition_time'] * 1e-6 # seconds
+        # compute doppler resolution
+        self.doppler_resolution = lmbda / (2 * self.radar_config['num_chirps'] * self.radar_config['num_tx'] * chirp_interval) # m/s
+        # compute max doppler reading
+        self.max_doppler = self.radar_config['num_chirps']  * self.doppler_resolution / 2 # m/s
+
 
     def numpy_to_pointcloud2(self, points, frame_id="map"):
         """
@@ -32,7 +68,7 @@ class RadarProcessor(Node):
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
             PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
             PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
-            PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1)
+            PointField(name="velocity", offset=12, datatype=PointField.FLOAT32, count=1)
         ]
 
         packed_points = [struct.pack('ffff', *p) for p in points]
@@ -61,21 +97,36 @@ class RadarProcessor(Node):
 
             fmt = '<fff f H Q'  # Matches 26 bytes (float32 x3, float32, uint16, uint64)
             point_step = msg.point_step  # Should be 26 bytes
-            print("Point step:", point_step)
 
             points = [struct.unpack(fmt, msg.data[i:i+point_step]) for i in range(0, len(msg.data), point_step)]
 
             points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, intensity, ring, timestamp]
-            print("Lidar points shape:", points.shape)
+            points = points[:,:3]  # Keep only x, y, z
+            points = np.concatenate((points, np.zeros((points.shape[0], 1))), axis=1)  # Add velocity column
+            points = cartesian_to_polar(points)  # Convert to polar coordinates
 
-            msg = self.numpy_to_pointcloud2(points[:,:4])
+            points = points[points[:, 0] < self.max_range]  # Filter points based on max range
+            # points = points[points[:, 1] < 2*np.pi/6]  # Filter points based on max elevation angle
+            # points = points[points[:, 1] > 2*np.pi/6]  # Filter points based on max elevation angle
+            # points = points[points[:, 2] < np.pi/12]  # Filter points based on max elevation angle
+            # points = points[points[:, 2] > np.pi/12]  # Filter points based on max elevation angle
+
+            filtered_points = points[
+                (np.abs(points[:, 1] + np.radians(90)) <= np.radians(60)) & 
+                (np.abs(points[:, 2] - np.radians(15)) <= np.radians(15))
+            ]
+
+            print(filtered_points.shape)
+
+            points = polar_to_cartesian(filtered_points)  # Convert back to cartesian coordinates
+            points = np.concatenate((points, np.zeros((points.shape[0], 1))), axis=1)  # Add velocity column
+            msg = self.numpy_to_pointcloud2(points)
             self.lidar_point_publisher.publish(msg)
-            # return points  # Shape should be (N, 6) with columns: [x, y, z, intensity, ring, timestamp]
 
         except Exception as e:
             self.get_logger().error(f'Error processing Lidar data: {str(e)}')
 
-    def image_callback(self, msg):
+    def radar_callback(self, msg):
         try:
             # Convert ROS Image to NumPy array
             np_image = np.frombuffer(msg.data, dtype=np.int16).reshape((msg.height, msg.width, 2))
@@ -95,7 +146,7 @@ class RadarProcessor(Node):
             adc_complex = adc_data[..., 0] + 1j * adc_data[..., 1]
 
             # Process the radar ADC image into range-azimuth representation
-            output_images = self.process_image(adc_complex)
+            output_images = self.process_ADC(adc_complex)
 
             # Convert processed image back to ROS Image message
             for topic, image in output_images.items():
@@ -110,7 +161,7 @@ class RadarProcessor(Node):
         except Exception as e:
             self.get_logger().error(f'Error processing image: {str(e)}')
 
-    def process_image(self, current_radar_frame):
+    def process_ADC(self, current_radar_frame):
         """
         Take Radar ADC data and process it into various images.
         Args:
@@ -167,6 +218,8 @@ class RadarProcessor(Node):
         
         # np.where(np.max(velocity_cube, axis=-1) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
         # np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
+
+        self.velocity_cube = velocity_cube
 
         output_images['velocity_azimuth_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))[::-1, ::-1] + 16
         output_images['velocity_range_azimuth'] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0)) + 16
