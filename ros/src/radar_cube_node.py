@@ -1,34 +1,79 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+import sensor_msgs_py.point_cloud2 as pc2
+from sensor_msgs.msg import Image, PointCloud2, PointField
 import scipy.signal.windows as windows
 from scipy.ndimage import median_filter
+import struct
 import numpy as np
 
 class RadarProcessor(Node):
     def __init__(self):
         super().__init__('radar_processor')
-        self.subscription = self.create_subscription(
+        self.adc_subscriber = self.create_subscription(
             Image, '/radar_ADC', self.image_callback, 10)
-        self.rfft_subscriber = self.create_subscription(
-            Image, '/radar_RFFT_tx2_rx4', self.RFFT_callback, 10)
+        self.lidar_subscriber = self.create_subscription(
+            PointCloud2, '/lidar_points', self.lidar_callback, 10)
 
         self.ros_publishers = {}
 
         self.get_logger().info('Radar Processor Node Started')
 
-        self.RFFT_image = None
+        self.lidar_point_publisher = self.create_publisher(PointCloud2, '/lidar_points_with_radial_velocity', 10)
 
-    def RFFT_callback(self, msg):
+    def numpy_to_pointcloud2(self, points, frame_id="map"):
+        """
+        Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
+        :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
+        :param frame_id: Reference frame of the point cloud
+        :return: PointCloud2 ROS message
+        """
+        fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+            PointField(name="intensity", offset=12, datatype=PointField.FLOAT32, count=1)
+        ]
+
+        packed_points = [struct.pack('ffff', *p) for p in points]
+        point_step = 16
+
+        data = b"".join(packed_points)
+        
+        msg = PointCloud2()
+        msg.header.frame_id = frame_id
+        msg.height = 1  # Unordered point cloud (single row)
+        msg.width = points.shape[0]
+        msg.fields = fields
+        msg.is_bigendian = False
+        msg.point_step = point_step
+        msg.row_step = msg.point_step * msg.width
+        msg.data = data
+        msg.is_dense = True  # No NaN values
+        
+        return msg
+
+    def lidar_callback(self, msg):
+        # Process the Lidar data
         try:
-            # Convert ROS Image to NumPy array
-            np_image = np.frombuffer(msg.data, dtype=np.int16).reshape((msg.height, msg.width, 2))
-            np_image_complex = np_image[..., 0] + 1j * np_image[..., 1]
+            lidar_data = pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
+            lidar_points = np.array(list(lidar_data))
 
-            self.RFFT_image = np_image_complex
+            fmt = '<fff f H Q'  # Matches 26 bytes (float32 x3, float32, uint16, uint64)
+            point_step = msg.point_step  # Should be 26 bytes
+            print("Point step:", point_step)
+
+            points = [struct.unpack(fmt, msg.data[i:i+point_step]) for i in range(0, len(msg.data), point_step)]
+
+            points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, intensity, ring, timestamp]
+            print("Lidar points shape:", points.shape)
+
+            msg = self.numpy_to_pointcloud2(points[:,:4])
+            self.lidar_point_publisher.publish(msg)
+            # return points  # Shape should be (N, 6) with columns: [x, y, z, intensity, ring, timestamp]
 
         except Exception as e:
-            self.get_logger().error(f'Error processing image: {str(e)}')
+            self.get_logger().error(f'Error processing Lidar data: {str(e)}')
 
     def image_callback(self, msg):
         try:
