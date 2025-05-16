@@ -7,6 +7,9 @@ from scipy.ndimage import median_filter
 import struct
 from utils import cartesian_to_polar, polar_to_cartesian
 import numpy as np
+import tf2_ros
+from pyquaternion import Quaternion
+
 
 class RadarProcessor(Node):
     def __init__(self):
@@ -21,6 +24,9 @@ class RadarProcessor(Node):
         self.get_logger().info('Radar Processor Node Started')
 
         self.lidar_point_publisher = self.create_publisher(PointCloud2, '/lidar_points_with_radial_velocity', 10)
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Compute RADAR config
         self.radar_config = {
@@ -57,7 +63,7 @@ class RadarProcessor(Node):
         self.max_doppler = self.radar_config['num_chirps']  * self.doppler_resolution / 2 # m/s
 
 
-    def numpy_to_pointcloud2(self, points, frame_id="map"):
+    def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link"):
         """
         Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
         :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
@@ -88,6 +94,43 @@ class RadarProcessor(Node):
         msg.is_dense = True  # No NaN values
         
         return msg
+    
+    def transform_points(self, points, source_frame, target_frame):
+        try:
+            # Lookup transform from source_frame to target_frame
+            transform = self.tf_buffer.lookup_transform(target_frame, source_frame, self.get_clock().now(),  rclpy.duration.Duration(seconds=1.0))
+
+            # Convert transform to matrix
+            translation = np.array([transform.transform.translation.x,
+                                     transform.transform.translation.y,
+                                     transform.transform.translation.z])
+            rotation = transform.transform.rotation
+            quaternion = Quaternion([rotation.w, rotation.x, rotation.y, rotation.z])
+            rotation_matrix = quaternion.rotation_matrix
+
+            # print(rotation_matrix)
+            # print(translation)
+
+            # rotation_matrix = np.array([[ 0.99997086, 0.00348797,  0.00679117],
+            #                             [ 0.00672519, 0.01859214, -0.99980453],
+            #                             [-0.00361355, 0.99982107,  0.01856814],])
+            # translation = np.array([ 0.01190664, -0.32498627,-0.75900204])
+            
+
+            # Create transformation matrix
+            transformation_matrix = np.eye(4)
+            transformation_matrix[:3, :3] = rotation_matrix[:3, :3]
+            transformation_matrix[:3, 3] = translation
+
+            # Transform points
+            points_homogeneous = np.vstack((points, np.ones((1, points.shape[1]))))  # Convert to homogeneous coordinates
+            transformed_points = transformation_matrix @ points_homogeneous
+            return transformed_points[:3, :]  # Convert back to 3D coordinates
+
+        except Exception as e:
+            self.get_logger().error(f"Failed to transform points: {e}")
+            return points
+
 
     def lidar_callback(self, msg):
         # Process the Lidar data
@@ -102,6 +145,9 @@ class RadarProcessor(Node):
 
             points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, intensity, ring, timestamp]
             points = points[:,:3]  # Keep only x, y, z
+
+            points = self.transform_points(points.T, 'hesai_lidar', 'vmd3_radar').T  # Transform points to radar frame
+
             points = np.concatenate((points, np.zeros((points.shape[0], 1))), axis=1)  # Add velocity column
             points = cartesian_to_polar(points)  # Convert to polar coordinates
 
@@ -112,16 +158,15 @@ class RadarProcessor(Node):
             # points = points[points[:, 2] > np.pi/12]  # Filter points based on max elevation angle
 
             filtered_points = points[
-                (np.abs(points[:, 1] + np.radians(90)) <= np.radians(60)) & 
-                (np.abs(points[:, 2] - np.radians(15)) <= np.radians(15))
+                (np.abs(points[:, 1]) <= np.radians(60)) & 
+                (np.abs(points[:, 2]) <= np.radians(15))
             ]
-
-            print(filtered_points.shape)
 
             points = polar_to_cartesian(filtered_points)  # Convert back to cartesian coordinates
             points = np.concatenate((points, np.zeros((points.shape[0], 1))), axis=1)  # Add velocity column
             msg = self.numpy_to_pointcloud2(points)
             self.lidar_point_publisher.publish(msg)
+            self.get_logger().info('Published transformed Lidar points')
 
         except Exception as e:
             self.get_logger().error(f'Error processing Lidar data: {str(e)}')
