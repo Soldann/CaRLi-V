@@ -32,7 +32,7 @@ class RadarProcessor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Compute RADAR config
-        self.radar_h_fov = 60*2
+        self.radar_h_fov = 87*2
         self.radar_v_fov = 30
         self.target_azimuth_bins = 50
         self.target_elevation_bins = 20
@@ -137,15 +137,6 @@ class RadarProcessor(Node):
             quaternion = Quaternion([rotation.w, rotation.x, rotation.y, rotation.z])
             rotation_matrix = quaternion.rotation_matrix
 
-            # print(rotation_matrix)
-            # print(translation)
-
-            # rotation_matrix = np.array([[ 0.99997086, 0.00348797,  0.00679117],
-            #                             [ 0.00672519, 0.01859214, -0.99980453],
-            #                             [-0.00361355, 0.99982107,  0.01856814],])
-            # translation = np.array([ 0.01190664, -0.32498627,-0.75900204])
-            
-
             # Create transformation matrix
             transformation_matrix = np.eye(4)
             transformation_matrix[:3, :3] = rotation_matrix[:3, :3]
@@ -180,10 +171,6 @@ class RadarProcessor(Node):
             polar_points = cartesian_to_polar(points)  # Convert to polar coordinates
 
             polar_points = polar_points[polar_points[:, 0] < self.max_range]  # Filter points based on max range
-            # points = points[points[:, 1] < 2*np.pi/6]  # Filter points based on max elevation angle
-            # points = points[points[:, 1] > 2*np.pi/6]  # Filter points based on max elevation angle
-            # points = points[points[:, 2] < np.pi/12]  # Filter points based on max elevation angle
-            # points = points[points[:, 2] > np.pi/12]  # Filter points based on max elevation angle
 
             filtered_points = polar_points[
                 (np.abs(polar_points[:, 1]) <= np.radians(self.radar_h_fov / 2)) & 
@@ -352,9 +339,16 @@ class RadarProcessor(Node):
         elevation_indices[angle_indices == len(elevation_bins)] = len(elevation_bins) - 1  # Ensure the last bin is not out of bounds
 
         velocities = np.zeros((lidar_points.shape[0]))
-        filtered_min = minimum_filter(velocity_cube, size=10)
-        filtered_max = maximum_filter(velocity_cube, size=10)
+        filtered_min = minimum_filter(velocity_cube, size=(10,10,20))
+        filtered_max = maximum_filter(velocity_cube, size=(10,10,20))
         extreme_values = np.where(np.abs(filtered_max) > np.abs(filtered_min), filtered_max, filtered_min)
+
+        debug_images["velocity_readings"] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0)) + 16
+        debug_images["velocity_readings_and_lidar"] = np.where(np.abs(np.max(extreme_values, axis=0)) < np.abs(np.min(extreme_values, axis=0)), np.min(extreme_values, axis=0), np.max(extreme_values, axis=0)) + 16
+        debug_images['velocity_readings_and_lidar'][angle_indices, range_indices] = 32
+        debug_images['velocity_readings_and_lidar'] = debug_images['velocity_readings_and_lidar'] * 255/32
+        debug_images["velocity_readings"] = debug_images['velocity_readings'] * 255/32
+
         velocities = extreme_values[elevation_indices, angle_indices, range_indices]  # Assign velocities to bins
         return velocities, debug_images
     
