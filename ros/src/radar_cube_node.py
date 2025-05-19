@@ -5,8 +5,11 @@ from sensor_msgs.msg import Image, PointCloud2, PointField
 import scipy.signal.windows as windows
 from scipy.ndimage import median_filter
 import struct
+from scipy.ndimage import minimum_filter, maximum_filter
 from utils import cartesian_to_polar, polar_to_cartesian, interpolate_array
 import numpy as np
+import torch
+import torch.nn.functional as F
 import tf2_ros
 from pyquaternion import Quaternion
 
@@ -31,6 +34,8 @@ class RadarProcessor(Node):
         # Compute RADAR config
         self.radar_h_fov = 60*2
         self.radar_v_fov = 30
+        self.target_azimuth_bins = 50
+        self.target_elevation_bins = 20
 
         self.radar_config = {
             'num_tx': 3,
@@ -172,27 +177,30 @@ class RadarProcessor(Node):
 
             points = self.transform_points(points.T, 'hesai_lidar', 'vmd3_radar').T  # Transform points to radar frame
 
-            points = np.concatenate((points, np.zeros((points.shape[0], 1))), axis=1)  # Add velocity column
-            points = cartesian_to_polar(points)  # Convert to polar coordinates
+            polar_points = cartesian_to_polar(points)  # Convert to polar coordinates
 
-            points = points[points[:, 0] < self.max_range]  # Filter points based on max range
+            polar_points = polar_points[polar_points[:, 0] < self.max_range]  # Filter points based on max range
             # points = points[points[:, 1] < 2*np.pi/6]  # Filter points based on max elevation angle
             # points = points[points[:, 1] > 2*np.pi/6]  # Filter points based on max elevation angle
             # points = points[points[:, 2] < np.pi/12]  # Filter points based on max elevation angle
             # points = points[points[:, 2] > np.pi/12]  # Filter points based on max elevation angle
 
-            filtered_points = points[
-                (np.abs(points[:, 1]) <= np.radians(self.radar_h_fov / 2)) & 
-                (points[:,2] >  np.radians(-self.radar_v_fov / 2 + 10)) &
-                (points[:, 2] < np.radians(self.radar_v_fov / 2))
+            filtered_points = polar_points[
+                (np.abs(polar_points[:, 1]) <= np.radians(self.radar_h_fov / 2)) & 
+                (polar_points[:,2] >  np.radians(-self.radar_v_fov / 2 + 10)) &
+                (polar_points[:, 2] < np.radians(self.radar_v_fov / 2))
             ]
 
-            self.lidar_points = filtered_points.copy()
-            # print("There are {} points in the lidar frame".format(self.lidar_points.shape[0]))
-            points = polar_to_cartesian(filtered_points)  # Convert back to cartesian coordinates
-            points = np.concatenate((points, np.zeros((points.shape[0], 1))), axis=1)  # Add velocity column
-            # print("There are now {} points in the lidar frame".format(points.shape[0]))
-            msg = self.numpy_to_pointcloud2(points)
+            velocities, debug_images = self.radar_lidar_fusion(filtered_points, self.velocity_cube[::-1, :, ::-1])  # Perform radar-lidar fusion
+
+            for topic, image in debug_images.items():
+                if topic not in self.ros_publishers:
+                    self.get_logger().info('Adding new topic publisher ' + topic)
+                    self.ros_publishers[topic] = self.create_publisher(Image, topic, 10)
+                out_msg = self.create_ros_image(image, msg.header, False)
+                self.ros_publishers[topic].publish(out_msg)
+
+            msg = self.numpy_to_pointcloud2(np.concatenate((polar_to_cartesian(filtered_points), velocities[:, np.newaxis]), axis=1))
             self.lidar_point_publisher.publish(msg)
             self.get_logger().info('Published transformed Lidar points')
 
@@ -262,19 +270,17 @@ class RadarProcessor(Node):
         doppler_fft = np.fft.fftshift(np.fft.fft(range_fft * window, axis=0), axes=0)
 
         # Angle FFT
-        target_azimuth_bins = 50
-        target_elevation_bins = 20
         padded_range_fft = np.pad(doppler_fft,
                                   pad_width=[(0, 0),
-                                             (0, target_elevation_bins-doppler_fft.shape[1]),
-                                             (0, target_azimuth_bins-doppler_fft.shape[2]),
+                                             (0, self.target_elevation_bins-doppler_fft.shape[1]),
+                                             (0, self.target_azimuth_bins-doppler_fft.shape[2]),
                                              (0, 0)],
                                   mode='constant'
                                 )
 
         # Do 2D FFT on the azimuth-elevation dimension
 
-        window = np.outer(windows.hamming(target_elevation_bins), windows.hamming(target_azimuth_bins)) # N is the number of samples
+        window = np.outer(windows.hamming(self.target_elevation_bins), windows.hamming(self.target_azimuth_bins)) # N is the number of samples
         window = window[np.newaxis, :, :, np.newaxis]
         angle_fft = np.fft.fftshift(np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=1), axes=2)
 
@@ -296,30 +302,61 @@ class RadarProcessor(Node):
 
         # output_images['range_azimuth'] = 20 * np.log(np.mean(np.mean(np.abs(angle_fft), axis=1), axis=0))
 
-        output_images['velocity_azimuth_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))[::-1, ::-1] + 16
-        output_images['velocity_range_azimuth'] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0))[:, ::-1] + 16
-        output_images['velocity_range_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=1)) < np.abs(np.min(velocity_cube, axis=1)), np.min(velocity_cube, axis=1), np.max(velocity_cube, axis=1)) + 16
+        # output_images['velocity_azimuth_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))[::-1, ::-1] + 16
+        # output_images['velocity_range_azimuth'] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0))[:, ::-1] + 16
+        # output_images['velocity_range_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=1)) < np.abs(np.min(velocity_cube, axis=1)), np.min(velocity_cube, axis=1), np.max(velocity_cube, axis=1)) + 16
 
-        output_images['velocity_range_azimuth_linear'] = self.scale_image(np.mean(np.mean(magnitude_db, axis=1), axis=0)).T[::-1]
-        range_bins = np.arange(0, self.max_range + self.range_resolution, self.range_resolution)  # 1-degree bins
-        # angle_bins = np.arcsin(2* np.linspace(-25/50, 25/50, num=50))  # 20 range bins
-        angle_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=50)
+        # output_images['velocity_range_azimuth_linear'] = self.scale_image(np.mean(np.mean(magnitude_db, axis=1), axis=0)).T[::-1]
+        # range_bins = np.arange(0, self.max_range + self.range_resolution, self.range_resolution)  # 1-degree bins
+        # # angle_bins = np.arcsin(2* np.linspace(-25/50, 25/50, num=50))  # 20 range bins
+        # angle_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=50)
 
-        range_indices = np.digitize(self.lidar_points[:,0], range_bins)  # Assign ranges to bins
-        angle_indices = np.digitize(self.lidar_points[:,1], self.angle_array)  # Assign angles to bins
-        range_indices[range_indices == 128] = 127  # Ensure the last bin is not out of bounds
-        angle_indices[angle_indices == 50] = 49  # Ensure the last bin is not out of bounds
+        # range_indices = np.digitize(self.lidar_points[:,0], range_bins)  # Assign ranges to bins
+        # angle_indices = np.digitize(self.lidar_points[:,1], self.angle_array)  # Assign angles to bins
+        # range_indices[range_indices == 128] = 127  # Ensure the last bin is not out of bounds
+        # angle_indices[angle_indices == 50] = 49  # Ensure the last bin is not out of bounds
 
-        output_images['velocity_range_azimuth'][angle_indices, range_indices] = 255 
-        output_images['velocity_range_azimuth'] = output_images['velocity_range_azimuth'][::-1].T[::-1]
+        # output_images['velocity_range_azimuth'][angle_indices, range_indices] = 255 
+        # output_images['velocity_range_azimuth'] = output_images['velocity_range_azimuth'][::-1].T[::-1]
 
-        angle_indices = np.digitize(self.lidar_points[:,1], angle_bins)  # Assign angles to bins
-        angle_indices[angle_indices == 50] = 49  # Ensure the last bin is not out of bounds
+        # angle_indices = np.digitize(self.lidar_points[:,1], angle_bins)  # Assign angles to bins
+        # angle_indices[angle_indices == 50] = 49  # Ensure the last bin is not out of bounds
 
-        output_images['velocity_range_azimuth_linear'][range_indices, angle_indices] = 255 
-        output_images['velocity_range_azimuth_linear'] = output_images['velocity_range_azimuth_linear'][::-1,::-1]
+        # output_images['velocity_range_azimuth_linear'][range_indices, angle_indices] = 255 
+        # output_images['velocity_range_azimuth_linear'] = output_images['velocity_range_azimuth_linear'][::-1,::-1]
 
         return output_images
+    
+    def radar_lidar_fusion(self, lidar_points, velocity_cube):
+        """
+        Perform radar-lidar fusion.
+        Args:
+            lidar_points (np.ndarray): Lidar points in polar coordinates. [Nx3]
+            velocity_cube (np.ndarray): Radar velocity cube in polar coordinates. (elevation, azimuth, range)
+        Returns:
+            np.ndarray: Fused point cloud. [Nx4]
+            debug_images (dict): Dictionary of intermediate images, where keys are topic names and values are the corresponding images. 
+                                    Publishers will be automatically created for each topic if they don't already exist.
+        """
+        debug_images = {}
+
+        range_bins = np.arange(0, self.max_range, self.range_resolution)  # 1-degree bins
+        angle_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=self.target_azimuth_bins)  # 20 range bins
+        elevation_bins = np.linspace(-np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2), num=self.target_elevation_bins)  # 20 range bins
+
+        range_indices = np.digitize(lidar_points[:,0], range_bins)  # Assign ranges to bins
+        angle_indices = np.digitize(lidar_points[:,1], angle_bins)  # Assign angles to bins
+        elevation_indices = np.digitize(lidar_points[:,2], elevation_bins)  # Assign angles to bins
+        range_indices[range_indices == len(range_bins)] = len(range_bins) - 1  # Ensure the last bin is not out of bounds
+        angle_indices[angle_indices == len(angle_bins)] = len(angle_bins) - 1  # Ensure the last bin is not out of bounds
+        elevation_indices[angle_indices == len(elevation_bins)] = len(elevation_bins) - 1  # Ensure the last bin is not out of bounds
+
+        velocities = np.zeros((lidar_points.shape[0]))
+        filtered_min = minimum_filter(velocity_cube, size=10)
+        filtered_max = maximum_filter(velocity_cube, size=10)
+        extreme_values = np.where(np.abs(filtered_max) > np.abs(filtered_min), filtered_max, filtered_min)
+        velocities = extreme_values[elevation_indices, angle_indices, range_indices]  # Assign velocities to bins
+        return velocities, debug_images
     
     def apply_threshold(self, image, threshold):
         """
