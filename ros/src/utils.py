@@ -29,3 +29,9 @@ def cartesian_to_polar(points):
     phi = np.arctan2(z, np.sqrt(x**2 + y**2))  # Elevation angle
     
     return np.column_stack((r, theta, phi))
+
+def interpolate_array(arr, num_points=4):
+    x = np.arange(len(arr))  # Original indices
+    x_interp = np.linspace(0, len(arr) - 1, num=(len(arr) - 1) * (num_points + 1) + 1)  # New interpolated indices
+    y_interp = np.interp(x_interp, x, arr)  # Perform linear interpolation
+    return y_interp
