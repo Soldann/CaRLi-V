@@ -29,6 +29,9 @@ class RadarProcessor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Compute RADAR config
+        self.radar_h_fov = 60*2
+        self.radar_v_fov = 30
+
         self.radar_config = {
             'num_tx': 3,
             'num_rx': 4,
@@ -179,9 +182,9 @@ class RadarProcessor(Node):
             # points = points[points[:, 2] > np.pi/12]  # Filter points based on max elevation angle
 
             filtered_points = points[
-                (np.abs(points[:, 1]) <= np.radians(60)) & 
-                (points[:,2] >  np.radians(-5)) &
-                (points[:, 2] < np.radians(15))
+                (np.abs(points[:, 1]) <= np.radians(self.radar_h_fov / 2)) & 
+                (points[:,2] >  np.radians(-self.radar_v_fov / 2 + 10)) &
+                (points[:, 2] < np.radians(self.radar_v_fov / 2))
             ]
 
             self.lidar_points = filtered_points.copy()
@@ -223,7 +226,7 @@ class RadarProcessor(Node):
                 if topic not in self.ros_publishers:
                     self.get_logger().info('Adding new topic publisher ' + topic)
                     self.ros_publishers[topic] = self.create_publisher(Image, topic, 10)
-                out_msg = self.create_ros_image(image*256/32, msg.header, False)
+                out_msg = self.create_ros_image(image, msg.header, False)
                 self.ros_publishers[topic].publish(out_msg)
 
             self.get_logger().info('Published processed images')
@@ -297,10 +300,10 @@ class RadarProcessor(Node):
         output_images['velocity_range_azimuth'] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0))[:, ::-1] + 16
         output_images['velocity_range_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=1)) < np.abs(np.min(velocity_cube, axis=1)), np.min(velocity_cube, axis=1), np.max(velocity_cube, axis=1)) + 16
 
-        output_images['velocity_range_azimuth_linear'] = output_images['velocity_range_azimuth'].copy()
+        output_images['velocity_range_azimuth_linear'] = self.scale_image(np.mean(np.mean(magnitude_db, axis=1), axis=0)).T[::-1]
         range_bins = np.arange(0, self.max_range + self.range_resolution, self.range_resolution)  # 1-degree bins
         # angle_bins = np.arcsin(2* np.linspace(-25/50, 25/50, num=50))  # 20 range bins
-        angle_bins = np.linspace(-np.radians(60), np.radians(60), num=50)
+        angle_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=50)
 
         range_indices = np.digitize(self.lidar_points[:,0], range_bins)  # Assign ranges to bins
         angle_indices = np.digitize(self.lidar_points[:,1], self.angle_array)  # Assign angles to bins
@@ -310,13 +313,11 @@ class RadarProcessor(Node):
         output_images['velocity_range_azimuth'][angle_indices, range_indices] = 255 
         output_images['velocity_range_azimuth'] = output_images['velocity_range_azimuth'][::-1].T[::-1]
 
-
         angle_indices = np.digitize(self.lidar_points[:,1], angle_bins)  # Assign angles to bins
         angle_indices[angle_indices == 50] = 49  # Ensure the last bin is not out of bounds
 
-        output_images['velocity_range_azimuth_linear'][angle_indices, range_indices] = 255 
-        output_images['velocity_range_azimuth_linear'] = output_images['velocity_range_azimuth_linear'][::-1].T[::-1]
-
+        output_images['velocity_range_azimuth_linear'][range_indices, angle_indices] = 255 
+        output_images['velocity_range_azimuth_linear'] = output_images['velocity_range_azimuth_linear'][::-1,::-1]
 
         return output_images
     
@@ -343,7 +344,7 @@ class RadarProcessor(Node):
         min_val = np.min(image)
         max_val = np.max(image)
         scaled_image = (image - min_val) / (max_val - min_val) * 255
-        return scaled_image.astype(np.uint8)
+        return scaled_image
 
     def create_ros_image(self, np_array, header, scale_image=True):
         msg = Image()
