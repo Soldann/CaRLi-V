@@ -1,2 +1,5 @@
 examples/indoor_sample_50.h5
-ros/src/__pycache__/*
+__pycache__/   
+ros/install/*
+ros/build/*
+ros/log/*

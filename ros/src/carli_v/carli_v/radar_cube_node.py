@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 import sensor_msgs_py.point_cloud2 as pc2
@@ -6,7 +7,7 @@ import scipy.signal.windows as windows
 from scipy.ndimage import median_filter
 import struct
 from scipy.ndimage import minimum_filter, maximum_filter
-from utils import cartesian_to_polar, polar_to_cartesian, interpolate_array
+from carli_v.utils import cartesian_to_polar, polar_to_cartesian, interpolate_array
 import numpy as np
 import torch
 import torch.nn.functional as F
