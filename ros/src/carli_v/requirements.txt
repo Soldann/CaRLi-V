@@ -1,0 +1,3 @@
+pyquaternion
+numpy
+scipy
