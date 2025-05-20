@@ -1,3 +1,4 @@
 pyquaternion
 numpy
 scipy
+git+https://github.com/Soldann/NeuFlow_v2.git@527cc50f4727f1f810d6120b843fc18433616dbb
