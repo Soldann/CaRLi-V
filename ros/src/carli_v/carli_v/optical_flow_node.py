@@ -140,8 +140,6 @@ class OpticalFlowNode(Node):
             10)
         self.K_matrix = None
 
-        self.get_logger().info('Optical Flow Node Started')
-
         self.last_image = None
 
         self.device = torch.device('cuda')
@@ -163,6 +161,8 @@ class OpticalFlowNode(Node):
         
         # Publisher for the republished image
         self.publisher = self.create_publisher(Image, '/output_image_topic', 10)
+
+        self.get_logger().info('Optical Flow Node Started')
 
     def camera_info_callback(self, msg):
         # Extract the K matrix
