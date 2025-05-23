@@ -68,7 +68,7 @@ class RadarFullVelocityNode(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.lidar_points = None
+        self.image = None
 
         self.lidar_point_publisher = self.create_publisher(PointCloud2, '/lidar_points_with_full_velocity', 10)
 
@@ -144,19 +144,7 @@ class RadarFullVelocityNode(Node):
         np_arr = np.frombuffer(msg.data, np.uint8)
         cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        if self.lidar_points is None or self.K_matrix is None:
-            return
-
-        transformed_pts = self.transform_points(self.lidar_points[:,:3].T, "vmd3_radar", "zed_camera_link")
-        print(transformed_pts.shape)
-        transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
-        transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert y-axis for camera coordinates
-        # transformed_pts[0] = -transformed_pts[0]  # Invert y-axis for camera coordinates
-        projected_image = self.project_points_to_image(transformed_pts, cv_image, self.K_matrix)
-
-        # Publish the projected image
-        projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
-        self.point_projection_publisher.publish(projected_msg)
+        self.image = cv_image
 
     def project_points_to_image(self, points, image, camera_matrix):
         # print(points)
@@ -180,7 +168,7 @@ class RadarFullVelocityNode(Node):
 
         # Use numpy to batch process instead of looping
         for x, y in points_2d_int.T:
-            cv2.circle(image, (x, y), 3, (0, 255, 0), -1)
+            cv2.circle(image, (x, y), 1, (0, 255, 0), -1)
 
         return image
 
@@ -192,7 +180,16 @@ class RadarFullVelocityNode(Node):
 
         points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, radial_velocity]
 
-        self.lidar_points = points
+        if self.image is not None and self.K_matrix is not None:
+            transformed_pts = self.transform_points(points[:,:3].T, "vmd3_radar", "zed_camera_link")
+            transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
+            transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
+            projected_image = self.project_points_to_image(transformed_pts, self.image, self.K_matrix)
+
+            # Publish the projected image
+            projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
+            self.point_projection_publisher.publish(projected_msg)
+
         points = np.concatenate((points, np.zeros((points.shape[0], 3))), axis=1)  # Add vx, vy, vz
 
         new_msg = self.numpy_to_pointcloud2(points)
