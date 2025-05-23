@@ -93,7 +93,7 @@ class RadarProcessor(Node):
         self.lidar_buffer = deque(maxlen=50)  # store recent lidar msgs
         self.lidar_delay_sec = 0.1  # delay in seconds (100ms)
 
-    def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link"):
+    def numpy_to_pointcloud2(self, points, frame_id="vmd3_radar"):
         """
         Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
         :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]

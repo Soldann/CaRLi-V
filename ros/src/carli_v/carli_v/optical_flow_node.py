@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -48,45 +49,50 @@ def fuse_conv_and_bn(conv, bn):
 
 def flow2uv_full(flow, K):
     '''
-    uv_map: h x w x 2    
+    Convert flow into pixel coordinates of before and after:
+    Returns:
+    - x_map: x coordinates of the first image
+    - y_map: y coordinates of the first image
+    - u_map: new x coordinates of where those pixels end up in the second image
+    - v_map: new y coordinates of where those pixels end up in the second image
     '''
     f = K[0,0]
     cx = K[0,2]
     cy = K[1,2]
-    
+
     h,w = flow.shape[:2]
     x_map, y_map = np.meshgrid(np.arange(w), np.arange(h))
     x_map, y_map = x_map.astype('float32'), y_map.astype('float32')
     x_map += flow[..., 0]
     y_map += flow[..., 1]
-    
+
     u_map = (x_map - cx) / f
     v_map = (y_map - cy) / f
-    
-    uv_map = np.stack([u_map,v_map], axis=2)
-    
-    return uv_map
+
+    # uv_map = np.stack([u_map,v_map], axis=2)
+
+    return x_map, y_map, u_map, v_map
 
 
-def downsample_flow(flow_full, downsample_scale, y_cutoff):
-    H, W, nc = flow_full.shape       
-    h = int( H / downsample_scale )
-    w = int( W / downsample_scale )
-    
-    x_map, y_map = np.meshgrid(np.arange(w), np.arange(h))
-    
-    x_map_old = np.round( np.clip( x_map * downsample_scale, 0, W-1) ).astype(int).ravel()
-    y_map_old = np.round( np.clip( y_map * downsample_scale, 0, H-1) ).astype(int).ravel()
-    
-    flow_list = []
-    for i in range(nc):
-        flow_list.append(flow_full[y_map_old, x_map_old, i])
-    
-    flow = np.stack(flow_list, axis=1)    
-    flow = np.reshape(flow, (h,w,-1))       
-    flow = flow[y_cutoff:,...]
-    
-    return flow
+# def downsample_flow(flow_full, downsample_scale, y_cutoff):
+#     H, W, nc = flow_full.shape
+#     h = int( H / downsample_scale )
+#     w = int( W / downsample_scale )
+
+#     x_map, y_map = np.meshgrid(np.arange(w), np.arange(h))
+
+#     x_map_old = np.round( np.clip( x_map * downsample_scale, 0, W-1) ).astype(int).ravel()
+#     y_map_old = np.round( np.clip( y_map * downsample_scale, 0, H-1) ).astype(int).ravel()
+
+#     flow_list = []
+#     for i in range(nc):
+#         flow_list.append(flow_full[y_map_old, x_map_old, i])
+
+#     flow = np.stack(flow_list, axis=1)
+#     flow = np.reshape(flow, (h,w,-1))
+#     flow = flow[y_cutoff:,...]
+
+#     return flow
 
 def plot_flow_cv2(im, flow, color=(255, 0, 255), step=20):
     """
@@ -124,7 +130,7 @@ class OpticalFlowNode(Node):
     def __init__(self):
         super().__init__('OpticalFlowNode')
         self.bridge = CvBridge()
-        
+
         # Subscribe to the input image topic
         self.image_subscription = self.create_subscription(
             CompressedImage,
@@ -133,7 +139,7 @@ class OpticalFlowNode(Node):
             10
         )
 
-        self.subscription = self.create_subscription(
+        self.camera_info_subscription = self.create_subscription(
             CameraInfo,
             '/boxi/zed2i/left/camera_info',  # Topic name
             self.camera_info_callback,
@@ -158,9 +164,11 @@ class OpticalFlowNode(Node):
         # Neuflow parameters
         self.image_width = 768
         self.image_height = 432
-        
+
         # Publisher for the republished image
-        self.publisher = self.create_publisher(Image, '/output_image_topic', 10)
+        self.optical_flow_publisher = self.create_publisher(Image, '/optical_flow_image', 10)
+
+        self.optical_flow_uv_publisher = self.create_publisher(Float32MultiArray, '/optical_flow_uv_map', 10)
 
         self.get_logger().info('Optical Flow Node Started')
 
@@ -187,30 +195,29 @@ class OpticalFlowNode(Node):
 
 
             padder = frame_utils.InputPadder(im1.shape, mode='kitti', padding_factor=16)
-            print(im1.shape)
             im1, im2 = padder.pad(im1, im2)
-            print(im1.shape)
             self.model.init_bhwd(im1.shape[0], im1.shape[-2], im1.shape[-1], self.device)
             with torch.no_grad():
                 flow = self.model(im1.half(), im2.half())[-1][0]
                 flow = flow.permute(1,2,0).cpu().numpy()[:,...]
 
-            downsample_scale = 4
-            y_cutoff = 33
-
-            flow_downsampled = downsample_flow(flow, downsample_scale, y_cutoff)
-            flow_downsampled /= downsample_scale
-        
-            uv_map = flow2uv_full(flow, self.K_matrix)
-            uv_map = downsample_flow(uv_map, downsample_scale, y_cutoff)
+            u_1, v_1, u_2, v_2 = flow2uv_full(flow, self.K_matrix)
 
             plotted_flow = plot_flow_cv2(self.last_image.astype(np.uint8), flow, color=(255, 0, 255), step=20)
 
             # Convert BGR8 OpenCV image to ROS 2 Image message
             ros_image = self.bridge.cv2_to_imgmsg(plotted_flow, encoding='bgr8')
+            self.optical_flow_publisher.publish(ros_image)
 
-            # Publish the standard image
-            self.publisher.publish(ros_image)
+            # publish uv_map
+            msg = Float32MultiArray()
+            uv_data = np.array([u_1, v_1, u_2, v_2])
+            msg.data = uv_data.flatten().tolist()
+            msg.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
+            msg.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
+            msg.layout.dim.append(MultiArrayDimension(label="cols", size=uv_data.shape[2], stride=1))
+            self.optical_flow_uv_publisher.publish(msg)
+
             self.get_logger().info('Converted and published optical flow image.')
 
             # Update the last image
