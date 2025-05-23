@@ -10,7 +10,8 @@ from carli_v.utils import cartesian_to_polar, polar_to_cartesian, interpolate_ar
 import numpy as np
 import tf2_ros
 from pyquaternion import Quaternion
-
+from collections import deque
+from rclpy.time import Time
 
 class RadarProcessor(Node):
     def __init__(self):
@@ -31,7 +32,7 @@ class RadarProcessor(Node):
 
         # Compute RADAR config
         self.radar_h_fov = 87*2
-        self.radar_v_fov = 30
+        self.radar_v_fov = 87*2
         self.target_azimuth_bins = 50
         self.target_elevation_bins = 20
 
@@ -68,7 +69,6 @@ class RadarProcessor(Node):
         # compute max doppler reading
         self.max_doppler = self.radar_config['num_chirps']  * self.doppler_resolution / 2 # m/s
 
-
         # Angle resolution Calculation
         Na = 8                      # number of antennas
         lambda_m = 0.00486           # 77 GHz -> 3.9 mm wavelength
@@ -89,6 +89,9 @@ class RadarProcessor(Node):
 
         self.angle_array = interpolate_array(theta_rad, 6)
 
+        # LiDAR delay parameters
+        self.lidar_buffer = deque(maxlen=50)  # store recent lidar msgs
+        self.lidar_delay_sec = 0.1  # delay in seconds (100ms)
 
     def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link"):
         """
@@ -151,15 +154,18 @@ class RadarProcessor(Node):
 
 
     def lidar_callback(self, msg):
+        self.lidar_buffer.append(msg)
+
+    def process_lidar_with_radar(self, lidar_msg, radar_msg):
         # Process the Lidar data
         try:
-            lidar_data = pc2.read_points(msg, field_names=("x", "y", "z"), skip_nans=True)
+            lidar_data = pc2.read_points(lidar_msg, field_names=("x", "y", "z"), skip_nans=True)
             lidar_points = np.array(list(lidar_data))
 
             fmt = '<fff f H Q'  # Matches 26 bytes (float32 x3, float32, uint16, uint64)
-            point_step = msg.point_step  # Should be 26 bytes
+            point_step = lidar_msg.point_step  # Should be 26 bytes
 
-            points = [struct.unpack(fmt, msg.data[i:i+point_step]) for i in range(0, len(msg.data), point_step)]
+            points = [struct.unpack(fmt, lidar_msg.data[i:i+point_step]) for i in range(0, len(lidar_msg.data), point_step)]
 
             points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, intensity, ring, timestamp]
             points = points[:,:3]  # Keep only x, y, z
@@ -182,7 +188,7 @@ class RadarProcessor(Node):
                 if topic not in self.ros_publishers:
                     self.get_logger().info('Adding new topic publisher ' + topic)
                     self.ros_publishers[topic] = self.create_publisher(Image, topic, 10)
-                out_msg = self.create_ros_image(image, msg.header, False)
+                out_msg = self.create_ros_image(image, radar_msg.header, False)
                 self.ros_publishers[topic].publish(out_msg)
 
             msg = self.numpy_to_pointcloud2(np.concatenate((polar_to_cartesian(filtered_points), velocities[:, np.newaxis]), axis=1))
@@ -212,7 +218,26 @@ class RadarProcessor(Node):
             adc_complex = adc_data[..., 0] + 1j * adc_data[..., 1]
 
             # Process the radar ADC image into range-azimuth representation
-            output_images = self.process_ADC(adc_complex)
+            velocity_cube, output_images = self.process_ADC(adc_complex)
+            self.velocity_cube = velocity_cube  # store it for fusion
+
+            radar_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            target_time = radar_time - self.lidar_delay_sec
+
+            closest_lidar = None
+            closest_time_diff = float('inf')
+
+            for lidar_msg in self.lidar_buffer:
+                lidar_time = Time.from_msg(lidar_msg.header.stamp).nanoseconds / 1e9
+                diff = abs(lidar_time - target_time)
+                if diff < closest_time_diff and lidar_time <= target_time:
+                    closest_lidar = lidar_msg
+                    closest_time_diff = diff
+
+            if closest_lidar is not None:
+                self.process_lidar_with_radar(closest_lidar, msg)
+            else:
+                self.get_logger().warn('No suitable delayed LiDAR message found')
 
             # Convert processed image back to ROS Image message
             for topic, image in output_images.items():
@@ -310,7 +335,7 @@ class RadarProcessor(Node):
         # output_images['velocity_range_azimuth_linear'][range_indices, angle_indices] = 255 
         # output_images['velocity_range_azimuth_linear'] = output_images['velocity_range_azimuth_linear'][::-1,::-1]
 
-        return output_images
+        return velocity_cube, output_images
     
     def radar_lidar_fusion(self, lidar_points, velocity_cube):
         """
