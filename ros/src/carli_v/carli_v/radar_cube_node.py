@@ -95,7 +95,7 @@ class RadarProcessor(Node):
         self.lidar_buffer = deque(maxlen=50)  # store recent lidar msgs
         self.lidar_delay_sec = 0.1  # delay in seconds (100ms)
 
-    def numpy_to_pointcloud2(self, points, frame_id="vmd3_radar"):
+    def numpy_to_pointcloud2(self, points, frame_id="vmd3_radar", timestamp=None):
         """
         Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
         :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
@@ -116,6 +116,7 @@ class RadarProcessor(Node):
         
         msg = PointCloud2()
         msg.header.frame_id = frame_id
+        msg.header.stamp = timestamp if timestamp else self.get_clock().now().to_msg()
         msg.height = 1  # Unordered point cloud (single row)
         msg.width = points.shape[0]
         msg.fields = fields
@@ -189,7 +190,7 @@ class RadarProcessor(Node):
                 out_msg = self.create_ros_image(image, radar_msg.header, False)
                 self.ros_publishers[topic].publish(out_msg)
 
-            msg = self.numpy_to_pointcloud2(np.concatenate((polar_to_cartesian(filtered_points), velocities[:, np.newaxis]), axis=1))
+            msg = self.numpy_to_pointcloud2(np.concatenate((polar_to_cartesian(filtered_points), velocities[:, np.newaxis]), axis=1), timestamp=lidar_msg.header.stamp)
             self.lidar_point_publisher.publish(msg)
             self.get_logger().info('Published transformed Lidar points')
 

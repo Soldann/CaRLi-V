@@ -1,10 +1,12 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2, CameraInfo, PointField, CompressedImage, Image
 import sensor_msgs_py.point_cloud2 as pc2
 from cv_bridge import CvBridge
 import cv2
 import tf2_ros
+from collections import deque
 import struct
 from std_msgs.msg import Float32MultiArray
 from pyquaternion import Quaternion
@@ -75,8 +77,12 @@ class RadarFullVelocityNode(Node):
         self.bridge = CvBridge()
         self.point_projection_publisher = self.create_publisher(Image, '/projected_points', 10)
 
+        # Image delay parameters
+        self.image_buffer = deque(maxlen=200)  # store recent image msgs
+        self.image_delay = 0  # delay in seconds (100ms)
 
-    def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link"):
+
+    def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link", timestamp=None):
         """
         Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
         :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
@@ -100,6 +106,7 @@ class RadarFullVelocityNode(Node):
 
         msg = PointCloud2()
         msg.header.frame_id = frame_id
+        msg.header.stamp = msg.header.stamp = timestamp if timestamp else self.get_clock().now().to_msg()
         msg.height = 1  # Unordered point cloud (single row)
         msg.width = points.shape[0]
         msg.fields = fields
@@ -140,11 +147,7 @@ class RadarFullVelocityNode(Node):
             return
 
     def image_callback(self, msg):
-        # Convert compressed image to raw OpenCV image
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-        self.image = cv_image
+        self.image_buffer.append(msg)
 
     def project_points_to_image(self, points, image, camera_matrix):
         # print(points)
@@ -180,15 +183,39 @@ class RadarFullVelocityNode(Node):
 
         points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, radial_velocity]
 
-        if self.image is not None and self.K_matrix is not None:
-            transformed_pts = self.transform_points(points[:,:3].T, "vmd3_radar", "zed_camera_link")
-            transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
-            transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
-            projected_image = self.project_points_to_image(transformed_pts, self.image, self.K_matrix)
+        if self.K_matrix is not None:
+            radar_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            target_time = radar_time - self.image_delay
 
-            # Publish the projected image
-            projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
-            self.point_projection_publisher.publish(projected_msg)
+            closest_image = None
+            closest_time_diff = float('inf')
+
+            self.get_logger().info(f'images_in_buffer: {len(self.image_buffer)}')
+            for image_msg in self.image_buffer:
+                image_time = Time.from_msg(image_msg.header.stamp).nanoseconds / 1e9
+                diff = abs(image_time - target_time)
+                # self.get_logger().info(f'diff: {target_time - image_time}, image_time: {image_time}, target_time: {target_time}')
+                if diff < closest_time_diff and image_time <= target_time:
+                    closest_image = image_msg
+                    closest_time_diff = diff
+
+
+            if closest_image is not None:
+                # Convert compressed image to raw OpenCV image
+                np_arr = np.frombuffer(closest_image.data, np.uint8)
+                cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+                transformed_pts = self.transform_points(points[:,:3].T, "vmd3_radar", "zed_camera_link")
+                transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
+                transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
+                projected_image = self.project_points_to_image(transformed_pts, cv_image, self.K_matrix)
+
+                # Publish the projected image
+                projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
+                self.point_projection_publisher.publish(projected_msg)
+                self.get_logger().info('Published: Projected Image')
+            else:
+                self.get_logger().warn('No suitable delayed IMAGE message found')
 
         points = np.concatenate((points, np.zeros((points.shape[0], 3))), axis=1)  # Add vx, vy, vz
 
