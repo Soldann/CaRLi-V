@@ -34,7 +34,7 @@ class RadarProcessor(Node):
         self.radar_h_fov = 87*2
         self.radar_v_fov = 87*2
         self.target_azimuth_bins = 50
-        self.target_elevation_bins = 20
+        self.target_elevation_bins = 2
 
         self.radar_config = {
             'num_tx': 3,
@@ -68,6 +68,8 @@ class RadarProcessor(Node):
         self.doppler_resolution = lmbda / (2 * self.radar_config['num_chirps'] * self.radar_config['num_tx'] * chirp_interval) # m/s
         # compute max doppler reading
         self.max_doppler = self.radar_config['num_chirps']  * self.doppler_resolution / 2 # m/s
+        print("Min Doppler:", - self.max_doppler)
+        print("Max Doppler:", self.max_doppler - self.doppler_resolution/2)
 
         # Angle resolution Calculation
         Na = 8                      # number of antennas
@@ -152,16 +154,12 @@ class RadarProcessor(Node):
             self.get_logger().error(f"Failed to transform points: {e}")
             return points
 
-
     def lidar_callback(self, msg):
         self.lidar_buffer.append(msg)
 
     def process_lidar_with_radar(self, lidar_msg, radar_msg):
         # Process the Lidar data
         try:
-            lidar_data = pc2.read_points(lidar_msg, field_names=("x", "y", "z"), skip_nans=True)
-            lidar_points = np.array(list(lidar_data))
-
             fmt = '<fff f H Q'  # Matches 26 bytes (float32 x3, float32, uint16, uint64)
             point_step = lidar_msg.point_step  # Should be 26 bytes
 
@@ -295,13 +293,16 @@ class RadarProcessor(Node):
         angle_fft = np.fft.fftshift(np.fft.fftshift(np.fft.fft2(padded_range_fft * window, axes=(1,2)), axes=1), axes=2)
 
         # VELOCITY COMPUTATION
-        # Step 1: Compute magnitude in dB
+        # Compute magnitude in dB
         magnitude_db = 20 * np.log10(np.abs(angle_fft) + 1e-12)
 
-        # Step 2: Find max Doppler bin index for each azimuth-range pair
-        velocity_cube = np.argmax(magnitude_db, axis=0) - 16  # shape: (elevation, azimuth, range)
+        # Find max Doppler bin index for each azimuth-range pair
+        velocity_cube = np.argmax(magnitude_db, axis=0) - (angle_fft.shape[0]//2)  # shape: (elevation, azimuth, range)
 
-        # Step 3: Thresholding — set weak points to center bin (index 16)
+        # Changing velocity cube from bins to m/s
+        velocity_cube = velocity_cube * self.doppler_resolution  # Convert to m/s
+
+        # Thresholding — set weak points to center bin (index 16)
         min_intensity_dB = magnitude_db.max() - 5
         velocity_cube[np.max(magnitude_db, axis=0) < min_intensity_dB] = 0  # Assign center bin for weak detections
         
@@ -309,6 +310,39 @@ class RadarProcessor(Node):
         # np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
 
         self.velocity_cube = velocity_cube
+
+        # magnitude_azimuth_elevation = np.mean(np.mean(magnitude_db, axis=-1), axis=0)[::-1, ::-1]
+
+        # # Relative thresholding
+        # # thresholded_magnitude_azimuth_elevation = self.apply_threshold(magnitude_azimuth_elevation, 3)
+        # # Absolute thresholding
+        # threshold_db = 19 #db
+        # thresholded_magnitude_azimuth_elevation = np.clip(magnitude_azimuth_elevation, threshold_db, None)
+        # # Output image
+        # output_images['magnitude_azimuth_elevation'] = self.scale_image(thresholded_magnitude_azimuth_elevation)
+
+        # amplitude_azimuth_elevation = (np.mean(np.mean(np.real(angle_fft), axis=-1), axis=0)[::-1, ::-1])
+        # amplitude_azimuth_elevation += abs(np.min(amplitude_azimuth_elevation))
+        # amplitude_azimuth_elevation = np.log10(amplitude_azimuth_elevation + 1e-12) * 20
+        # amplitude_azimuth_elevation += abs(np.min(amplitude_azimuth_elevation))
+
+        # phase_azimuth_elevation = (np.mean(np.mean(np.imag(angle_fft), axis=-1), axis=0)[::-1, ::-1])
+        # phase_azimuth_elevation += abs(np.min(phase_azimuth_elevation))
+        # phase_azimuth_elevation = np.log10(phase_azimuth_elevation + 1e-12) * 20
+        # phase_azimuth_elevation += abs(np.min(phase_azimuth_elevation))
+
+        # print(amplitude_azimuth_elevation)
+        # print(phase_azimuth_elevation)
+
+        # thresholded_amplitude_azimuth_elevation = np.clip(amplitude_azimuth_elevation, 0, None)
+        # thresholded_phase_azimuth_elevation = np.clip(phase_azimuth_elevation, 0, None)
+
+        # thresholded_amplitude_azimuth_elevation = self.apply_percentage_threshold(amplitude_azimuth_elevation, 0.1)
+        # thresholded_phase_azimuth_elevation = self.apply_percentage_threshold(phase_azimuth_elevation, 0.1)
+
+        # # print(phase_azimuth_elevation)
+        # output_images['amplitude_azimuth_elevation'] = self.scale_image(amplitude_azimuth_elevation)
+        # output_images['phase_azimuth_elevation'] = self.scale_image(phase_azimuth_elevation)
 
         # output_images['range_azimuth'] = 20 * np.log(np.mean(np.mean(np.abs(angle_fft), axis=1), axis=0))
 
@@ -318,8 +352,8 @@ class RadarProcessor(Node):
 
         # output_images['velocity_range_azimuth_linear'] = self.scale_image(np.mean(np.mean(magnitude_db, axis=1), axis=0)).T[::-1]
         # range_bins = np.arange(0, self.max_range + self.range_resolution, self.range_resolution)  # 1-degree bins
-        # # angle_bins = np.arcsin(2* np.linspace(-25/50, 25/50, num=50))  # 20 range bins
-        # angle_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=50)
+        # # azimuth_bins = np.arcsin(2* np.linspace(-25/50, 25/50, num=50))  # 20 range bins
+        # azimuth_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=50)
 
         # range_indices = np.digitize(self.lidar_points[:,0], range_bins)  # Assign ranges to bins
         # angle_indices = np.digitize(self.lidar_points[:,1], self.angle_array)  # Assign angles to bins
@@ -329,7 +363,7 @@ class RadarProcessor(Node):
         # output_images['velocity_range_azimuth'][angle_indices, range_indices] = 255 
         # output_images['velocity_range_azimuth'] = output_images['velocity_range_azimuth'][::-1].T[::-1]
 
-        # angle_indices = np.digitize(self.lidar_points[:,1], angle_bins)  # Assign angles to bins
+        # angle_indices = np.digitize(self.lidar_points[:,1], azimuth_bins)  # Assign angles to bins
         # angle_indices[angle_indices == 50] = 49  # Ensure the last bin is not out of bounds
 
         # output_images['velocity_range_azimuth_linear'][range_indices, angle_indices] = 255 
@@ -351,15 +385,15 @@ class RadarProcessor(Node):
         debug_images = {}
 
         range_bins = np.arange(0, self.max_range, self.range_resolution)  # 1-degree bins
-        angle_bins = np.linspace(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), num=self.target_azimuth_bins)  # 20 range bins
-        elevation_bins = np.linspace(-np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2), num=self.target_elevation_bins)  # 20 range bins
+        azimuth_bins = np.arange(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2)/(self.target_azimuth_bins/2))  # 1-degree bins
+        elevation_bins = np.arange(-np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2)/(self.target_elevation_bins/2))  # 1-degree bins
 
         range_indices = np.digitize(lidar_points[:,0], range_bins)  # Assign ranges to bins
-        angle_indices = np.digitize(lidar_points[:,1], angle_bins)  # Assign angles to bins
+        angle_indices = np.digitize(lidar_points[:,1], azimuth_bins)  # Assign angles to bins
         elevation_indices = np.digitize(lidar_points[:,2], elevation_bins)  # Assign angles to bins
         range_indices[range_indices == len(range_bins)] = len(range_bins) - 1  # Ensure the last bin is not out of bounds
-        angle_indices[angle_indices == len(angle_bins)] = len(angle_bins) - 1  # Ensure the last bin is not out of bounds
-        elevation_indices[angle_indices == len(elevation_bins)] = len(elevation_bins) - 1  # Ensure the last bin is not out of bounds
+        angle_indices[angle_indices == len(azimuth_bins)] = len(azimuth_bins) - 1  # Ensure the last bin is not out of bounds
+        elevation_indices[elevation_indices == len(elevation_bins)] = len(elevation_bins) - 1  # Ensure the last bin is not out of bounds
 
         velocities = np.zeros((lidar_points.shape[0]))
         filtered_min = minimum_filter(velocity_cube, size=(10,10,20))
@@ -386,6 +420,18 @@ class RadarProcessor(Node):
         """
         threshold_db = image.max() - threshold
         return np.clip(image, a_min=threshold_db, a_max=None)
+
+    # def apply_percentage_threshold(self, image, threshold):
+    #     """
+    #     Apply a threshold to the image.
+    #     Args:
+    #         image (np.ndarray): Input image.
+    #         threshold (float): Threshold value.
+    #     Returns:
+    #         np.ndarray: Thresholded image.
+    #     """
+    #     threshold_db = image.max() - (1-threshold)*image.max()
+    #     return np.clip(image, a_min=threshold_db, a_max=None)
     
     def scale_image(self, image):
         """
