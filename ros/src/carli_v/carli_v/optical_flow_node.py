@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
-from std_msgs.msg import Float32MultiArray, MultiArrayDimension
+from std_msgs.msg import MultiArrayDimension
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -9,6 +9,7 @@ from NeuFlow import neuflow
 from NeuFlow.data_utils import frame_utils
 from NeuFlow.backbone_v7 import ConvBlock
 import torch
+from carli_v_msgs.msg import StampedFloat32MultiArray
 
 def get_cuda_image(image_path):
     image = cv2.imread(image_path)
@@ -168,7 +169,7 @@ class OpticalFlowNode(Node):
         # Publisher for the republished image
         self.optical_flow_publisher = self.create_publisher(Image, '/optical_flow_image', 10)
 
-        self.optical_flow_uv_publisher = self.create_publisher(Float32MultiArray, '/optical_flow_uv_map', 10)
+        self.optical_flow_uv_publisher = self.create_publisher(StampedFloat32MultiArray, '/optical_flow_uv_map', 10)
 
         self.get_logger().info('Optical Flow Node Started')
 
@@ -210,13 +211,14 @@ class OpticalFlowNode(Node):
             self.optical_flow_publisher.publish(ros_image)
 
             # publish uv_map
-            msg = Float32MultiArray()
+            uv_map_msg = StampedFloat32MultiArray()
             uv_data = np.array([u_1, v_1, u_2, v_2])
-            msg.data = uv_data.flatten().tolist()
-            msg.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
-            msg.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
-            msg.layout.dim.append(MultiArrayDimension(label="cols", size=uv_data.shape[2], stride=1))
-            self.optical_flow_uv_publisher.publish(msg)
+            uv_map_msg.stamp = msg.header.stamp 
+            uv_map_msg.array.data = uv_data.flatten().tolist()
+            uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
+            uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
+            uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="cols", size=uv_data.shape[2], stride=1))
+            self.optical_flow_uv_publisher.publish(uv_map_msg)
 
             self.get_logger().info('Converted and published optical flow image.')
 

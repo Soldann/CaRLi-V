@@ -11,6 +11,7 @@ import struct
 from std_msgs.msg import Float32MultiArray
 from pyquaternion import Quaternion
 import numpy as np
+from carli_v_msgs.msg import StampedFloat32MultiArray
 
 def cal_full_v_in_radar(vx, vy, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
     # output in radar coordinates
@@ -45,7 +46,7 @@ class RadarFullVelocityNode(Node):
     def __init__(self):
         super().__init__('RadarFullVelocityNode')
         self.optical_flow_subscription = self.create_subscription(
-            Float32MultiArray,
+            StampedFloat32MultiArray,
             '/optical_flow_uv_map',
             self.optical_flow_callback,
             10)
@@ -79,8 +80,8 @@ class RadarFullVelocityNode(Node):
 
         # Image delay parameters
         self.image_buffer = deque(maxlen=200)  # store recent image msgs
+        self.uv_image_buffer = deque(maxlen=200)
         self.image_delay = 0  # delay in seconds (100ms)
-
 
     def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link", timestamp=None):
         """
@@ -119,6 +120,10 @@ class RadarFullVelocityNode(Node):
         return msg
 
     def transform_points(self, points, source_frame, target_frame):
+        """
+        Take in a pointcloud and transform it from source_frame to target_frame
+        Input: points: DxN numpy array, where D is the dimensionality of the points and N is the number of points
+        """
         try:
             # Lookup transform from source_frame to target_frame
             transform = self.tf_buffer.lookup_transform(target_frame, source_frame, self.get_clock().now(),  rclpy.duration.Duration(seconds=1.0))
@@ -137,10 +142,12 @@ class RadarFullVelocityNode(Node):
             transformation_matrix[:3, 3] = translation
 
             # Transform points
-            points_homogeneous = np.vstack((points, np.ones((1, points.shape[1]))))  # Convert to homogeneous coordinates
+            points_homogeneous = np.vstack((points[:3, :], np.ones((1, points.shape[1]))))  # Convert to homogeneous coordinates
             transformed_points = transformation_matrix @ points_homogeneous
 
-            return transformed_points[:3, :]  # Convert back to 3D coordinates
+            transformed_points = np.vstack(transformed_points[:3, :], points[3, :])  # Convert back to 3D and keep any additional dimensions
+
+            return transformed_points
 
         except Exception as e:
             self.get_logger().error(f"Failed to transform points: {e}")
@@ -184,13 +191,12 @@ class RadarFullVelocityNode(Node):
         points = np.array(points)  # Shape should be (N, 6) with columns: [x, y, z, radial_velocity]
 
         if self.K_matrix is not None:
-            radar_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
-            target_time = radar_time - self.image_delay
+            lidar_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            target_time = lidar_time - self.image_delay
 
             closest_image = None
             closest_time_diff = float('inf')
 
-            self.get_logger().info(f'images_in_buffer: {len(self.image_buffer)}')
             for image_msg in self.image_buffer:
                 image_time = Time.from_msg(image_msg.header.stamp).nanoseconds / 1e9
                 diff = abs(image_time - target_time)
@@ -199,23 +205,45 @@ class RadarFullVelocityNode(Node):
                     closest_image = image_msg
                     closest_time_diff = diff
 
-
             if closest_image is not None:
                 # Convert compressed image to raw OpenCV image
                 np_arr = np.frombuffer(closest_image.data, np.uint8)
                 cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-                transformed_pts = self.transform_points(points[:,:3].T, "vmd3_radar", "zed_camera_link")
-                transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
-                transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
-                projected_image = self.project_points_to_image(transformed_pts, cv_image, self.K_matrix)
+                self.image = cv_image
+                # # Project lidar points onto the image
+                # transformed_pts = self.transform_points(points[:,:3].T, "vmd3_radar", "zed_camera_link")
+                # transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
+                # transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
+                # projected_image = self.project_points_to_image(transformed_pts, cv_image, self.K_matrix)
 
-                # Publish the projected image
-                projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
-                self.point_projection_publisher.publish(projected_msg)
-                self.get_logger().info('Published: Projected Image')
+                # # Publish the projected image
+                # projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
+                # self.point_projection_publisher.publish(projected_msg)
+                # self.get_logger().info('Published: Projected Image')
             else:
                 self.get_logger().warn('No suitable delayed IMAGE message found')
+
+        if self.K_matrix is not None:
+            lidar_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            target_time = lidar_time - self.image_delay # Optical flow should be delayed just as much as the images
+
+            closest_image_uv = None
+            closest_time_diff = float('inf')
+
+            for optical_flow_msg in self.uv_image_buffer:
+                image_time = Time.from_msg(optical_flow_msg.stamp).nanoseconds / 1e9
+                diff = abs(image_time - target_time)
+                # self.get_logger().info(f'diff: {target_time - image_time}, image_time: {image_time}, target_time: {target_time}')
+                if diff < closest_time_diff and image_time <= target_time:
+                    closest_image_uv = optical_flow_msg
+                    closest_time_diff = diff
+
+
+            if closest_image_uv is not None:
+                full_velocities = self.optical_flow_lidar_fusion(closest_image_uv.array, msg)
+            else:
+                self.get_logger().warn('No suitable delayed OPTICAL FLOW message found')
 
         points = np.concatenate((points, np.zeros((points.shape[0], 3))), axis=1)  # Add vx, vy, vz
 
@@ -227,9 +255,9 @@ class RadarFullVelocityNode(Node):
         # Extract the K matrix
         self.K_matrix = msg.k.reshape(3, 3)  # Convert to 3x3 matrix
 
-    def optical_flow_callback(self, msg):
-        dims = [dim.size for dim in msg.layout.dim]  # Extract dimensions
-        data = np.array(msg.data).reshape(dims)  # Reshape array
+    def optical_flow_lidar_fusion(self, optical_flow_msg, lidar_pcd):
+        dims = [dim.size for dim in optical_flow_msg.layout.dim]  # Extract dimensions
+        data = np.array(optical_flow_msg.data).reshape(dims)  # Reshape array
 
         if data.shape[0] != 4:
             self.get_logger().error(f"Expected 4 channels for optical flow (u1, v1, u2, v2), got {data.shape[0]}")
@@ -237,8 +265,19 @@ class RadarFullVelocityNode(Node):
 
         u1, v1, u2, v2 = data[0], data[1], data[2], data[3] # (u1, v1) are the xy coordinates of the first image, (u2, v2) are the xy coordinates of where they end up in the second image
 
+        transformed_pts = self.transform_points(lidar_pcd.T, "vmd3_radar", "zed_camera_link")
+        transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
+        transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
+        projected_image = self.project_points_to_image(transformed_pts, self.image, self.K_matrix)
 
+        projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
+        self.point_projection_publisher.publish(projected_msg)
+        self.get_logger().info('Published: Projected Image')
         self.get_logger().info(f'Received: Optical Flow Data with shape {data.shape}')
+
+    def optical_flow_callback(self, msg):
+        self.uv_image_buffer.append(msg)
+
 
 def main():
     rclpy.init()
