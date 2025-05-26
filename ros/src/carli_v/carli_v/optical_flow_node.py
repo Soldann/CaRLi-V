@@ -1,7 +1,8 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
-from std_msgs.msg import MultiArrayDimension
+from std_msgs.msg import MultiArrayDimension, Float32
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -186,6 +187,7 @@ class OpticalFlowNode(Node):
         if self.last_image is None or self.K_matrix is None:
             # If this is the first image or camera info is not available, just store the image
             self.last_image = cv_image
+            self.last_image_timestamp = msg.header.stamp
             return
         else:
             # Compute optical flow using NeuFlow
@@ -210,10 +212,15 @@ class OpticalFlowNode(Node):
             ros_image = self.bridge.cv2_to_imgmsg(plotted_flow, encoding='bgr8')
             self.optical_flow_publisher.publish(ros_image)
 
+            current_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            prev_time = Time.from_msg(self.last_image_timestamp).nanoseconds / 1e9
+
             # publish uv_map
             uv_map_msg = StampedFloat32MultiArray()
             uv_data = np.array([u_1, v_1, u_2, v_2])
             uv_map_msg.stamp = msg.header.stamp 
+            uv_map_msg.dt = Float32()
+            uv_map_msg.dt.data = current_time - prev_time  # Convert to seconds
             uv_map_msg.array.data = uv_data.flatten().tolist()
             uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
             uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
@@ -224,6 +231,7 @@ class OpticalFlowNode(Node):
 
             # Update the last image
             self.last_image = cv_image
+            self.last_image_timestamp = msg.header.stamp
 
 def main(args=None):
     rclpy.init(args=args)

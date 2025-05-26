@@ -13,22 +13,31 @@ from pyquaternion import Quaternion
 import numpy as np
 from carli_v_msgs.msg import StampedFloat32MultiArray
 
-def cal_full_v_in_radar(vx, vy, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
+def cal_full_v_in_radar(vx, vy, vz, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
     # output in radar coordinates
+     # T_c2r is the transformation matrix from camera to radar coordinates
      r11, r12, r13 = T_c2r[0,:3]
      r21, r22, r23 = T_c2r[1,:3]
+     r31, r32, r33 = T_c2r[2,:3]
 
      ra11, ra12, ra13, btx = T_c2c[0,:]
      ra21, ra22, ra23, bty = T_c2c[1,:]
      ra31, ra32, ra33, btz = T_c2c[2,:]
 
+     print("1", ra11-u2*ra31)
+     print("2", ra12-u2*ra32)
+     print("3", ra13-u2*ra33)
+     print(u2)
+     print(ra13)
+     print(ra33)
+
      A = np.array([[ra11-u2*ra31, ra12-u2*ra32, ra13-u2*ra33], \
                    [ra21-v2*ra31, ra22-v2*ra32, ra23-v2*ra33], \
-                   [r11*vx+r21*vy, r12*vx+r22*vy, r13*vx+r23*vy]] )
+                   [r11*vx+r21*vy+r31*vz, r12*vx+r22*vy+r32*vz, r13*vx+r23*vy+r33*vz]] ) # note we take the transpose of T_c2r because we actually want to go from radar to camera
 
      b = np.array([[((ra31*u1+ra32*v1+ra33)*u2-(ra11*u1+ra12*v1+ra13))*d+u2*btz-btx],\
                    [((ra31*u1+ra32*v1+ra33)*v2-(ra21*u1+ra22*v1+ra23))*d+v2*btz-bty],\
-                   [(vx**2 + vy**2)*dt]])
+                   [np.sqrt(vx**2 + vy**2 + vz**2)*dt]]) # TODO: Shouldn't we take the square root of this? To get the velocity magnitude?
 
      x = np.squeeze( np.dot( np.linalg.inv(A), b ) )
 
@@ -145,7 +154,7 @@ class RadarFullVelocityNode(Node):
             points_homogeneous = np.vstack((points[:3, :], np.ones((1, points.shape[1]))))  # Convert to homogeneous coordinates
             transformed_points = transformation_matrix @ points_homogeneous
 
-            transformed_points = np.vstack(transformed_points[:3, :], points[3, :])  # Convert back to 3D and keep any additional dimensions
+            transformed_points = np.vstack((transformed_points[:3, :], points[3, :]))  # Convert back to 3D and keep any additional dimensions
 
             return transformed_points
 
@@ -156,31 +165,38 @@ class RadarFullVelocityNode(Node):
     def image_callback(self, msg):
         self.image_buffer.append(msg)
 
-    def project_points_to_image(self, points, image, camera_matrix):
+    def project_points_to_image(self, points, image, camera_matrix, return_points_only=False):
         # print(points)
         depths = points[2, :]
         min_dist = 1.0 # Distance from the camera below which points are discarded.
 
         # Project 3D points onto 2D image plane using camera matrix
-        points_2d = camera_matrix @ points
+        points_2d = camera_matrix @ points[:3, :]  # Project points using camera matrix
         points_2d = points_2d / points_2d[2:3, :].repeat(3, 0)  # Normalize by z (depth)
 
-        mask = np.ones(depths.shape[0], dtype=bool)
-        mask = np.logical_and(mask, depths > min_dist)
-        mask = np.logical_and(mask, points_2d[0, :] > 1)
-        mask = np.logical_and(mask, points_2d[0, :] < image.shape[1] - 1)
-        mask = np.logical_and(mask, points_2d[1, :] > 1)
-        mask = np.logical_and(mask, points_2d[1, :] < image.shape[0] - 1)
-        points_2d = points_2d[:, mask]
-
+        points_2d = np.vstack((points_2d, points[3, :]))  # Append radial velocity or any other additional dimension	
+        
         # Convert points to integers in one step to avoid repeated conversions
         points_2d_int = points_2d[:2, :].astype(int)
 
-        # Use numpy to batch process instead of looping
-        for x, y in points_2d_int.T:
-            cv2.circle(image, (x, y), 1, (0, 255, 0), -1)
+        mask = np.ones(depths.shape[0], dtype=bool)
+        mask = np.logical_and(mask, depths > min_dist)
+        mask = np.logical_and(mask, points_2d_int[0, :] > 1)
+        mask = np.logical_and(mask, points_2d_int[0, :] < image.shape[0] - 1) # TODO: SHould this be image.shape[1]?
+        mask = np.logical_and(mask, points_2d_int[1, :] > 1)
+        mask = np.logical_and(mask, points_2d_int[1, :] < image.shape[1] - 1)
+        if not return_points_only:
+            points_2d_int = points_2d_int[:, mask]
 
-        return image
+        if return_points_only:
+            # If no image is provided, return the 2D points
+            return points_2d_int, mask
+        else:
+            # Use numpy to batch process instead of looping
+            for x, y in points_2d_int.T:
+                cv2.circle(image, (x, y), 1, (0, 255, 0), -1)
+
+            return image
 
     def lidar_callback(self, msg):
         fmt = '<fff f'  # Matches 16 bytes (float32 x3, float32)
@@ -239,23 +255,21 @@ class RadarFullVelocityNode(Node):
                     closest_image_uv = optical_flow_msg
                     closest_time_diff = diff
 
-
             if closest_image_uv is not None:
-                full_velocities = self.optical_flow_lidar_fusion(closest_image_uv.array, msg)
+                full_velocities = self.optical_flow_lidar_fusion(closest_image_uv.array, points, closest_image_uv.dt)
+                points = np.concatenate((points, full_velocities), axis=1)  # Add vx, vy, vz
+
+                new_msg = self.numpy_to_pointcloud2(points)
+                self.lidar_point_publisher.publish(new_msg)
+                self.get_logger().info(f'Published: Lidar Point Cloud with shape {points.shape}')
             else:
                 self.get_logger().warn('No suitable delayed OPTICAL FLOW message found')
-
-        points = np.concatenate((points, np.zeros((points.shape[0], 3))), axis=1)  # Add vx, vy, vz
-
-        new_msg = self.numpy_to_pointcloud2(points)
-        self.lidar_point_publisher.publish(new_msg)
-        self.get_logger().info(f'Published: Lidar Point Cloud with shape {points.shape}')
 
     def camera_info_callback(self, msg):
         # Extract the K matrix
         self.K_matrix = msg.k.reshape(3, 3)  # Convert to 3x3 matrix
 
-    def optical_flow_lidar_fusion(self, optical_flow_msg, lidar_pcd):
+    def optical_flow_lidar_fusion(self, optical_flow_msg, lidar_pcd, dt):
         dims = [dim.size for dim in optical_flow_msg.layout.dim]  # Extract dimensions
         data = np.array(optical_flow_msg.data).reshape(dims)  # Reshape array
 
@@ -268,12 +282,60 @@ class RadarFullVelocityNode(Node):
         transformed_pts = self.transform_points(lidar_pcd.T, "vmd3_radar", "zed_camera_link")
         transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
         transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
-        projected_image = self.project_points_to_image(transformed_pts, self.image, self.K_matrix)
+        print("Transformé", transformed_pts.shape)
+        print("K matrix", self.K_matrix)
+        projected_points, mask = self.project_points_to_image(transformed_pts, self.image, self.K_matrix, return_points_only=True)
 
-        projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
-        self.point_projection_publisher.publish(projected_msg)
-        self.get_logger().info('Published: Projected Image')
-        self.get_logger().info(f'Received: Optical Flow Data with shape {data.shape}')
+        projected_points = projected_points[:, mask]  # Filter points based on mask
+        transformed_pts = transformed_pts[:, mask]  # Filter transformed points based on mask
+
+
+        u1_lidar = u1[projected_points[0, :], projected_points[1, :]]  # Get u1 values for the projected points
+        v1_lidar = v1[projected_points[0, :], projected_points[1, :]]  # Get v1 values for the projected points
+        u2_lidar = u2[projected_points[0, :], projected_points[1, :]]  # Get u2 values for the projected points
+        v2_lidar = v2[projected_points[0, :], projected_points[1, :]]  # Get v2 values for the projected points
+
+        # Transforming radial velocities to cartesian coordinates
+        r = np.sqrt(transformed_pts[0, :]**2 + transformed_pts[1, :]**2 + transformed_pts[2, :]**2)
+        ux = transformed_pts[0, :] / r
+        uy = transformed_pts[1, :] / r
+        uz = transformed_pts[2, :] / r
+        vx_radar = transformed_pts[3, :]  * ux
+        vy_radar = transformed_pts[3, :]  * uy
+        vz_radar = transformed_pts[3, :]  * uz
+
+        # Lookup transform from source_frame to target_frame
+        transform = self.tf_buffer.lookup_transform("vmd3_radar", "zed_camera_link", self.get_clock().now(),  rclpy.duration.Duration(seconds=1.0))
+
+        # Convert transform to matrix
+        translation = np.array([transform.transform.translation.x,
+                                    transform.transform.translation.y,
+                                    transform.transform.translation.z])
+        rotation = transform.transform.rotation
+        quaternion = Quaternion([rotation.w, rotation.x, rotation.y, rotation.z])
+        rotation_matrix = quaternion.rotation_matrix
+
+        # Create transformation matrix
+        T_c2r = np.eye(4)
+        T_c2r[:3, :3] = rotation_matrix[:3, :3]
+        T_c2r[:3, 3] = translation
+    
+        vx = []
+        vy = []
+        vz = []
+        # print(u2.shape, v2.shape, vx_radar.shape, vy_radar.shape, vz_radar.shape, r.shape)
+        for vx_r, vy_r, vz_r, u1_i, v1_i, u2_i, v2_i, r_i in zip(vx_radar, vy_radar, vz_radar, u1_lidar, v1_lidar, u2_lidar, v2_lidar, r):
+            v_x, v_y, v_z = cal_full_v_in_radar(vx_r, vy_r, vz_r, r_i, u1_i, v1_i, u2_i, v2_i, T_c2r, np.identity(4), dt.data)
+            vx.append(v_x)
+            vy.append(v_y)
+            vz.append(v_z)
+
+        velocities = np.vstack((vx, vy, vz)).T
+        return velocities
+        # projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
+        # self.point_projection_publisher.publish(projected_msg)
+        # self.get_logger().info('Published: Projected Image')
+        # self.get_logger().info(f'Received: Optical Flow Data with shape {data.shape}')
 
     def optical_flow_callback(self, msg):
         self.uv_image_buffer.append(msg)
