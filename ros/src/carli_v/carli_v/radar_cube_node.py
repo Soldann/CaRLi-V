@@ -12,6 +12,8 @@ import tf2_ros
 from pyquaternion import Quaternion
 from collections import deque
 from rclpy.time import Time
+from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Point
 
 class RadarProcessor(Node):
     def __init__(self):
@@ -32,7 +34,7 @@ class RadarProcessor(Node):
 
         # Compute RADAR config
         self.radar_h_fov = 87*2
-        self.radar_v_fov = 87*2
+        self.radar_v_fov = 30*2
         self.target_azimuth_bins = 50
         self.target_elevation_bins = 2
 
@@ -94,6 +96,8 @@ class RadarProcessor(Node):
         # LiDAR delay parameters
         self.lidar_buffer = deque(maxlen=50)  # store recent lidar msgs
         self.lidar_delay_sec = 0.1  # delay in seconds (100ms)
+
+        self.marker_publisher = self.create_publisher(MarkerArray, '/lidar_velocity_arrows', 10)
 
     def numpy_to_pointcloud2(self, points, frame_id="vmd3_radar", timestamp=None):
         """
@@ -182,6 +186,8 @@ class RadarProcessor(Node):
             ]
 
             velocities, debug_images = self.radar_lidar_fusion(filtered_points, self.velocity_cube[::-1, :, ::-1])  # Perform radar-lidar fusion
+
+            self.publish_velocity_arrows(polar_to_cartesian(filtered_points), velocities)
 
             for topic, image in debug_images.items():
                 if topic not in self.ros_publishers:
@@ -372,6 +378,47 @@ class RadarProcessor(Node):
 
         return velocity_cube, output_images
     
+
+    def publish_velocity_arrows(self, lidar_points, velocities, frame_id="vmd3_radar"):
+        marker_array = MarkerArray()
+        for i, (point, v) in enumerate(zip(lidar_points, velocities)):
+            if np.abs(v) < 0.1:  # Threshold to avoid noisy low velocities
+                continue
+            
+            arrow = Marker()
+            arrow.header.frame_id = frame_id
+            arrow.header.stamp = self.get_clock().now().to_msg()
+            arrow.ns = "lidar_velocity"
+            arrow.id = i
+            arrow.type = Marker.ARROW
+            arrow.action = Marker.ADD
+
+            # Start and end point of the arrow
+            arrow.points.append(Point(x=point[0], y=point[1], z=point[2]))
+            length = -v * 0.5 # Scale factor for visualizing
+            direction = point / np.linalg.norm(point)  # Radial direction
+            end = point + direction * length
+            arrow.points.append(Point(x=end[0], y=end[1], z=end[2]))
+
+            # Arrow appearance
+            arrow.scale.x = 0.005  # shaft diameter
+            arrow.scale.y = 0.02   # head diameter
+            arrow.scale.z = 0.02   # head length
+
+            if v >= 0:
+                arrow.color.r = 0.0
+                arrow.color.g = 0.0
+                arrow.color.b = 1.0
+            else:
+                arrow.color.r = 1.0
+                arrow.color.g = 0.0
+                arrow.color.b = 0.0
+            arrow.color.a = 1.0
+
+            arrow.lifetime = rclpy.duration.Duration(seconds=0.5).to_msg()  # Lifetime of the marker
+            marker_array.markers.append(arrow)
+        self.marker_publisher.publish(marker_array)
+
     def radar_lidar_fusion(self, lidar_points, velocity_cube):
         """
         Perform radar-lidar fusion.
