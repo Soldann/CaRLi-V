@@ -63,17 +63,14 @@ def flow2uv_full(flow, K):
     cy = K[1,2]
 
     h,w = flow.shape[:2]
-    x_map, y_map = np.meshgrid(np.arange(w), np.arange(h))
-    x_map, y_map = x_map.astype('float32'), y_map.astype('float32')
-    x_map += flow[..., 0]
-    y_map += flow[..., 1]
-
-    u_map = (x_map - cx) / f
-    v_map = (y_map - cy) / f
-
+    x1_map, y1_map = np.meshgrid(np.arange(w), np.arange(h))
+    x1_map, y1_map = x1_map.astype('float32'), y1_map.astype('float32')
+    dx_map, dy_map = flow[...,0], flow[...,1]
+    x2_map, y2_map = x1_map + dx_map, y1_map + dy_map    
+    u1_map, v1_map, u2_map, v2_map = (x1_map - cx)/f, (y1_map - cy)/f, (x2_map - cx)/f, (y2_map - cy)/f
     # uv_map = np.stack([u_map,v_map], axis=2)
 
-    return x_map, y_map, u_map, v_map
+    return u1_map, v1_map, u2_map, v2_map
 
 
 # def downsample_flow(flow_full, downsample_scale, y_cutoff):
