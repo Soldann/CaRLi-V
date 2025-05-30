@@ -13,6 +13,8 @@ from pyquaternion import Quaternion
 import numpy as np
 from carli_v_msgs.msg import StampedFloat32MultiArray
 import matplotlib.pyplot as plt
+from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Point
 
 def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
     # output in radar coordinates
@@ -79,13 +81,15 @@ class RadarFullVelocityNode(Node):
 
         self.lidar_point_publisher = self.create_publisher(PointCloud2, '/lidar_points_with_full_velocity', 10)
 
+        self.marker_publisher = self.create_publisher(MarkerArray, '/lidar_full_velocity_arrows', 10)
+
         self.bridge = CvBridge()
         self.point_projection_publisher = self.create_publisher(Image, '/projected_points', 10)
 
         # Image delay parameters
-        self.image_buffer = deque(maxlen=160)  # store recent image msgs
-        self.uv_image_buffer = deque(maxlen=160)
-        self.image_delay = 0  # delay in seconds (100ms)
+        self.image_buffer = deque(maxlen=50)  # store recent image msgs
+        self.uv_image_buffer = deque(maxlen=50)
+        self.image_delay = -0.1  # delay in seconds (100ms)
 
     def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link", timestamp=None):
         """
@@ -169,8 +173,8 @@ class RadarFullVelocityNode(Node):
         points_2d = camera_matrix @ points[:3, :]  # Project points using camera matrix
         points_2d = points_2d / points_2d[2:3, :].repeat(3, 0)  # Normalize by z (depth)
 
-        points_2d = np.vstack((points_2d, points[3, :]))  # Append radial velocity or any other additional dimension	
-        
+        points_2d = np.vstack((points_2d, points[3, :]))  # Append radial velocity or any other additional dimension
+
         # Convert points to integers in one step to avoid repeated conversions
         points_2d_int = points_2d[:2, :].astype(int)
 
@@ -264,7 +268,8 @@ class RadarFullVelocityNode(Node):
                 points = np.concatenate((points[:,:3], np.zeros((points.shape[0], 4))), axis=1)  # Expand array to be (Nx7) to match desired output
                 self.get_logger().info(f'Published: Points shape {points[mask][:, 3:6].shape}, velocities shape{full_velocities.shape}')
                 points[mask, 3:] = full_velocities
-                self.get_logger().info(f"velocities {full_velocities}, {(full_velocities == 0).all()}") 
+                self.get_logger().info(f"velocities {full_velocities}, {(full_velocities == 0).all()}")
+                self.publish_velocity_arrows(points[mask, :3], full_velocities)
                 new_msg = self.numpy_to_pointcloud2(points)
                 self.lidar_point_publisher.publish(new_msg)
                 self.get_logger().info(f'Published: Lidar Point Cloud with shape {points.shape}')
@@ -320,12 +325,12 @@ class RadarFullVelocityNode(Node):
         T_c2r = np.eye(4)
         T_c2r[:3, :3] = rotation_matrix[:3, :3]
         T_c2r[:3, 3] = translation
-    
+
         vx = []
         vy = []
         vz = []
         # print(u2.shape, v2.shape, vx_radar.shape, vy_radar.shape, vz_radar.shape, r.shape)
-        for radial_unit_vector_i, velocity_i, u1_i, v1_i, u2_i, v2_i, distance_to_point in zip(radial_unit_vectors.T, transformed_pts[3, :], u1_lidar, v1_lidar, u2_lidar, v2_lidar, transformed_pts[2,:]):
+        for radial_unit_vector_i, velocity_i, u1_i, v1_i, u2_i, v2_i, distance_to_point in zip(radial_unit_vectors.T, -transformed_pts[3, :], u1_lidar, v1_lidar, u2_lidar, v2_lidar, transformed_pts[2,:]):
             v_x, v_y, v_z = cal_full_v_in_radar(radial_unit_vector_i, velocity_i, distance_to_point, u1_i, v1_i, u2_i, v2_i, np.identity(4), np.identity(4), dt.data)
             vx.append(v_x)
             vy.append(v_y)
@@ -340,6 +345,44 @@ class RadarFullVelocityNode(Node):
         self.point_projection_publisher.publish(projected_msg)
 
         return velocities, mask
+
+    def publish_velocity_arrows(self, lidar_points, velocities, frame_id="zed_camera_link"):
+        marker_array = MarkerArray()
+        for i, (point, v) in enumerate(zip(lidar_points, velocities)):
+            if v[3] < 0.1:  # Threshold to avoid noisy low velocities
+                continue
+
+            arrow = Marker()
+            arrow.header.frame_id = frame_id
+            arrow.header.stamp = self.get_clock().now().to_msg()
+            arrow.ns = "lidar_full_velocity"
+            arrow.id = i
+            arrow.type = Marker.ARROW
+            arrow.action = Marker.ADD
+
+            # Start and end point of the arrow
+            arrow.points.append(Point(x=point[0], y=point[1], z=point[2]))
+            end = [point[0] + 0.2*v[2], point[1] - 0.2*v[0], point[2] - 0.2*v[1]] # transform from (z forward, y left, x down) to (z up, y left, x forward)
+            arrow.points.append(Point(x=end[0], y=end[1], z=end[2]))
+
+            # Arrow appearance
+            arrow.scale.x = 0.005  # shaft diameter
+            arrow.scale.y = 0.02   # head diameter
+            arrow.scale.z = 0.02   # head length
+
+            if v[2] >= 0:
+                arrow.color.r = 0.0
+                arrow.color.g = 0.0
+                arrow.color.b = 1.0
+            else:
+                arrow.color.r = 1.0
+                arrow.color.g = 0.0
+                arrow.color.b = 0.0
+            arrow.color.a = 1.0
+
+            arrow.lifetime = rclpy.duration.Duration(seconds=14).to_msg()  # Lifetime of the marker
+            marker_array.markers.append(arrow)
+        self.marker_publisher.publish(marker_array)
 
     def optical_flow_callback(self, msg):
         self.uv_image_buffer.append(msg)
