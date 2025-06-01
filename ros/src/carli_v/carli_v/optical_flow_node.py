@@ -132,15 +132,15 @@ class OpticalFlowNode(Node):
 
         # Subscribe to the input image topic
         self.image_subscription = self.create_subscription(
-            CompressedImage,
-            '/boxi/zed2i/left/image_rect_color/compressed',
+            Image,
+            '/camera/image_raw',
             self.image_callback,
             10
         )
 
         self.camera_info_subscription = self.create_subscription(
             CameraInfo,
-            '/boxi/zed2i/left/camera_info',  # Topic name
+            '/camera/camera_info',  # Topic name
             self.camera_info_callback,
             10)
         self.K_matrix = None
@@ -178,8 +178,8 @@ class OpticalFlowNode(Node):
 
     def image_callback(self, msg):
         # Convert compressed image to raw OpenCV image
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR).astype(np.float32)
+        bridge = CvBridge()
+        cv_image = bridge.imgmsg_to_cv2(msg, "bgr8").astype(np.uint8)  # Convert ROS Image to OpenCV format
 
         if self.last_image is None or self.K_matrix is None:
             # If this is the first image or camera info is not available, just store the image

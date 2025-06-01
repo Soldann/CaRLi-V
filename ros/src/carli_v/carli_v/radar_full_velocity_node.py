@@ -61,14 +61,14 @@ class RadarFullVelocityNode(Node):
 
         self.camera_info_subscription = self.create_subscription(
             CameraInfo,
-            '/boxi/zed2i/left/camera_info',  # Topic name
+            '/camera/camera_info',  # Topic name
             self.camera_info_callback,
             10)
 
         # Subscribe to the input image topic
         self.image_subscription = self.create_subscription(
-            CompressedImage,
-            '/boxi/zed2i/left/image_rect_color/compressed',
+            Image,
+            '/camera/image_raw',
             self.image_callback,
             10
         )
@@ -89,7 +89,7 @@ class RadarFullVelocityNode(Node):
         # Image delay parameters
         self.image_buffer = deque(maxlen=50)  # store recent image msgs
         self.uv_image_buffer = deque(maxlen=50)
-        self.image_delay = -0.1  # delay in seconds (100ms)
+        self.image_delay = -0.08  # delay in seconds (100ms)
 
     def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link", timestamp=None):
         """
@@ -225,14 +225,14 @@ class RadarFullVelocityNode(Node):
                 image_time = Time.from_msg(image_msg.header.stamp).nanoseconds / 1e9
                 diff = abs(image_time - target_time)
                 # self.get_logger().info(f'diff: {target_time - image_time}, image_time: {image_time}, target_time: {target_time}')
-                if diff < closest_time_diff and image_time >= target_time:
+                if diff < closest_time_diff:
                     closest_image = image_msg
                     closest_time_diff = diff
 
             if closest_image is not None:
                 # Convert compressed image to raw OpenCV image
-                np_arr = np.frombuffer(closest_image.data, np.uint8)
-                cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                bridge = CvBridge()
+                cv_image = bridge.imgmsg_to_cv2(closest_image, "bgr8").astype(np.uint8)  # Convert ROS Image to OpenCV format
 
                 self.image = cv_image
                 # # Project lidar points onto the image
@@ -259,7 +259,7 @@ class RadarFullVelocityNode(Node):
                 image_time = Time.from_msg(optical_flow_msg.stamp).nanoseconds / 1e9
                 diff = abs(image_time - target_time)
                 self.get_logger().info(f'diff: {target_time - image_time}, image_time: {image_time  >= target_time}')
-                if diff < closest_time_diff and image_time >= target_time:
+                if diff < closest_time_diff:
                     closest_image_uv = optical_flow_msg
                     closest_time_diff = diff
 
@@ -269,9 +269,9 @@ class RadarFullVelocityNode(Node):
                 self.get_logger().info(f'Published: Points shape {points[mask][:, 3:6].shape}, velocities shape{full_velocities.shape}')
                 points[mask, 3:] = full_velocities
                 self.get_logger().info(f"velocities {full_velocities}, {(full_velocities == 0).all()}")
-                self.publish_velocity_arrows(points[mask, :3], full_velocities)
                 new_msg = self.numpy_to_pointcloud2(points)
                 self.lidar_point_publisher.publish(new_msg)
+                self.publish_velocity_arrows(points[mask, :3], full_velocities)
                 self.get_logger().info(f'Published: Lidar Point Cloud with shape {points.shape}')
             else:
                 self.get_logger().warn('No suitable delayed OPTICAL FLOW message found')
@@ -380,7 +380,7 @@ class RadarFullVelocityNode(Node):
                 arrow.color.b = 0.0
             arrow.color.a = 1.0
 
-            arrow.lifetime = rclpy.duration.Duration(seconds=14).to_msg()  # Lifetime of the marker
+            arrow.lifetime = rclpy.duration.Duration(seconds=2.6).to_msg()  # Lifetime of the marker
             marker_array.markers.append(arrow)
         self.marker_publisher.publish(marker_array)
 
