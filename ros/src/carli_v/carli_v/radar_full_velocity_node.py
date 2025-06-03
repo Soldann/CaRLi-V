@@ -89,9 +89,9 @@ class RadarFullVelocityNode(Node):
         # Image delay parameters
         self.image_buffer = deque(maxlen=50)  # store recent image msgs
         self.uv_image_buffer = deque(maxlen=50)
-        self.image_delay = -0.08  # delay in seconds (100ms)
+        self.image_delay = -1.00  # delay in seconds (100ms)
 
-    def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link", timestamp=None):
+    def numpy_to_pointcloud2(self, points, frame_id="zed_left_camera_frame", timestamp=None):
         """
         Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
         :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
@@ -290,7 +290,7 @@ class RadarFullVelocityNode(Node):
 
         u1, v1, u2, v2 = data[0], data[1], data[2], data[3] # (u1, v1) are the xy coordinates of the first image, (u2, v2) are the xy coordinates of where they end up in the second image
 
-        transformed_pts = self.transform_points(lidar_pcd.T, "vmd3_radar", "zed_camera_link")
+        transformed_pts = self.transform_points(lidar_pcd.T, "vmd3_radar", "zed_left_camera_frame")
         transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
         transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
         projected_points, mask = self.project_points_to_image(transformed_pts, self.image, self.K_matrix, return_points_only=True)
@@ -311,7 +311,7 @@ class RadarFullVelocityNode(Node):
         radial_unit_vectors = transformed_pts[0:3, :] / r
 
         # Lookup transform from source_frame to target_frame
-        transform = self.tf_buffer.lookup_transform("vmd3_radar", "zed_camera_link", self.get_clock().now(),  rclpy.duration.Duration(seconds=1.0))
+        transform = self.tf_buffer.lookup_transform("vmd3_radar", "zed_left_camera_frame", self.get_clock().now(),  rclpy.duration.Duration(seconds=1.0))
 
         # Convert transform to matrix
         translation = np.array([transform.transform.translation.x,
@@ -346,7 +346,7 @@ class RadarFullVelocityNode(Node):
 
         return velocities, mask
 
-    def publish_velocity_arrows(self, lidar_points, velocities, frame_id="zed_camera_link"):
+    def publish_velocity_arrows(self, lidar_points, velocities, frame_id="zed_left_camera_frame"):
         marker_array = MarkerArray()
         for i, (point, v) in enumerate(zip(lidar_points, velocities)):
             if v[3] < 0.1:  # Threshold to avoid noisy low velocities
@@ -370,17 +370,17 @@ class RadarFullVelocityNode(Node):
             arrow.scale.y = 0.02   # head diameter
             arrow.scale.z = 0.02   # head length
 
-            if v[2] >= 0:
-                arrow.color.r = 0.0
-                arrow.color.g = 0.0
-                arrow.color.b = 1.0
-            else:
-                arrow.color.r = 1.0
-                arrow.color.g = 0.0
-                arrow.color.b = 0.0
+            # if v[2] >= 0:
+            #     arrow.color.r = 0.0
+            #     arrow.color.g = 0.0
+            #     arrow.color.b = 1.0
+            # else:
+            arrow.color.r = 1.0
+            arrow.color.g = 0.0
+            arrow.color.b = 0.0
             arrow.color.a = 1.0
 
-            arrow.lifetime = rclpy.duration.Duration(seconds=2.6).to_msg()  # Lifetime of the marker
+            arrow.lifetime = rclpy.duration.Duration(seconds=7).to_msg()  # Lifetime of the marker
             marker_array.markers.append(arrow)
         self.marker_publisher.publish(marker_array)
 
