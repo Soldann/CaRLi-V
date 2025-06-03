@@ -1,7 +1,8 @@
 import rclpy
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
-from std_msgs.msg import MultiArrayDimension
+from std_msgs.msg import MultiArrayDimension, Float32
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -62,17 +63,14 @@ def flow2uv_full(flow, K):
     cy = K[1,2]
 
     h,w = flow.shape[:2]
-    x_map, y_map = np.meshgrid(np.arange(w), np.arange(h))
-    x_map, y_map = x_map.astype('float32'), y_map.astype('float32')
-    x_map += flow[..., 0]
-    y_map += flow[..., 1]
-
-    u_map = (x_map - cx) / f
-    v_map = (y_map - cy) / f
-
+    x1_map, y1_map = np.meshgrid(np.arange(w), np.arange(h))
+    x1_map, y1_map = x1_map.astype('float32'), y1_map.astype('float32')
+    dx_map, dy_map = flow[...,0], flow[...,1]
+    x2_map, y2_map = x1_map + dx_map, y1_map + dy_map    
+    u1_map, v1_map, u2_map, v2_map = (x1_map - cx)/f, (y1_map - cy)/f, (x2_map - cx)/f, (y2_map - cy)/f
     # uv_map = np.stack([u_map,v_map], axis=2)
 
-    return x_map, y_map, u_map, v_map
+    return u1_map, v1_map, u2_map, v2_map
 
 
 # def downsample_flow(flow_full, downsample_scale, y_cutoff):
@@ -134,15 +132,15 @@ class OpticalFlowNode(Node):
 
         # Subscribe to the input image topic
         self.image_subscription = self.create_subscription(
-            CompressedImage,
-            '/boxi/zed2i/left/image_rect_color/compressed',
+            Image,
+            '/camera/image_raw',
             self.image_callback,
             10
         )
 
         self.camera_info_subscription = self.create_subscription(
             CameraInfo,
-            '/boxi/zed2i/left/camera_info',  # Topic name
+            '/camera/camera_info',  # Topic name
             self.camera_info_callback,
             10)
         self.K_matrix = None
@@ -180,12 +178,13 @@ class OpticalFlowNode(Node):
 
     def image_callback(self, msg):
         # Convert compressed image to raw OpenCV image
-        np_arr = np.frombuffer(msg.data, np.uint8)
-        cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR).astype(np.float32)
+        bridge = CvBridge()
+        cv_image = bridge.imgmsg_to_cv2(msg, "bgr8").astype(np.uint8)  # Convert ROS Image to OpenCV format
 
         if self.last_image is None or self.K_matrix is None:
             # If this is the first image or camera info is not available, just store the image
             self.last_image = cv_image
+            self.last_image_timestamp = msg.header.stamp
             return
         else:
             # Compute optical flow using NeuFlow
@@ -210,10 +209,15 @@ class OpticalFlowNode(Node):
             ros_image = self.bridge.cv2_to_imgmsg(plotted_flow, encoding='bgr8')
             self.optical_flow_publisher.publish(ros_image)
 
+            current_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            prev_time = Time.from_msg(self.last_image_timestamp).nanoseconds / 1e9
+
             # publish uv_map
             uv_map_msg = StampedFloat32MultiArray()
             uv_data = np.array([u_1, v_1, u_2, v_2])
             uv_map_msg.stamp = msg.header.stamp 
+            uv_map_msg.dt = Float32()
+            uv_map_msg.dt.data = current_time - prev_time  # Convert to seconds
             uv_map_msg.array.data = uv_data.flatten().tolist()
             uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
             uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
@@ -224,6 +228,7 @@ class OpticalFlowNode(Node):
 
             # Update the last image
             self.last_image = cv_image
+            self.last_image_timestamp = msg.header.stamp
 
 def main(args=None):
     rclpy.init(args=args)
