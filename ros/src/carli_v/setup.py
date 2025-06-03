@@ -27,6 +27,7 @@ setup(
             'radar_cube_node = carli_v.radar_cube_node:main',
             'optical_flow_node = carli_v.optical_flow_node:main',
             'radar_full_velocity_node = carli_v.radar_full_velocity_node:main',
+            'scene_flow_node = carli_v.scene_flow_node:main',
         ],
     },
 )
