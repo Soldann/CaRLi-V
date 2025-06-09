@@ -13,8 +13,6 @@ See a demonstration of our pipeline in action by clicking on the image below:
 
 [![Link to YouTube Video](https://img.youtube.com/vi/oy1B_Mmpvt0/0.jpg)](https://youtu.be/oy1B_Mmpvt0)
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/oy1B_Mmpvt0?si=a_hEb1CoPYjR6dGM" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-
 ## Installation
 
 This repository was built on Ubuntu 22.04 for ROS2 Humble. To install the necessary packages to run the ROS nodes:
