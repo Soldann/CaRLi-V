@@ -7,6 +7,7 @@ from typing import List, Dict
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import open3d as o3d
 from pathlib import Path
+import pickle
 
 def visualize_points(point_cloud, title="Point Cloud Visualization"):
     # Extract X, Y, Z coordinates
@@ -144,55 +145,71 @@ R_lidar_2_left_cam = np.array(
 )
 t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
 
-# RETRIEVE POINTCLOUDS FOR EACH OBJECT
-for i, key in enumerate(frame_map):
-    dataset_frame_index = int(key)
-    print(f"Processing index {dataset_frame_index}")
-    frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
-    objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
+if Path("reflectors.pkl").exists():
+    with open('reflectors.pkl', 'rb') as file:
+        reflectors = pickle.load(file)
+    with open('persons.pkl', 'rb') as file:
+        persons = pickle.load(file)
+    with open('timestamp_to_index.pkl', 'rb') as file:
+        timestamp_to_index = pickle.load(file)
+else:
+    # RETRIEVE POINTCLOUDS FOR EACH OBJECT
+    for i, key in enumerate(frame_map):
+        dataset_frame_index = int(key)
+        print(f"Processing index {dataset_frame_index}")
+        frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
+        objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
 
-    pointcloud_filename = frame_map.get(key)
+        pointcloud_filename = frame_map.get(key)
 
-    figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-    point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
-    point_cloud_data = point_cloud_points
+        figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+        point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
+        point_cloud_data = point_cloud_points
 
-    timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+        timestamp = float(pointcloud_filename.removesuffix(".pcd"))
 
-    if len(figures_on_frame) != 2:
-        print("WTFFFFFFF")
+        if len(figures_on_frame) != 2:
+            print("WTFFFFFFF")
 
-    # Extract points associated with each object
-    for figure in figures_on_frame:
-        object_geometry = figure.geometry
-        position = object_geometry.position
-        dimensions = object_geometry.dimensions
+        # Extract points associated with each object
+        for figure in figures_on_frame:
+            object_geometry = figure.geometry
+            position = object_geometry.position
+            dimensions = object_geometry.dimensions
 
-        rotation = object_geometry.rotation  # Extract rotation vector
+            rotation = object_geometry.rotation  # Extract rotation vector
 
-        # Convert to np arrays because it's easier
-        rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
-        dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
-        position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+            # Convert to np arrays because it's easier
+            rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
+            dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
+            position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
 
-        object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
-        object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
-        # visualize_points(object_points)
+            object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
+            object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
+            # visualize_points(object_points)
 
-        object_centroid = np.mean(object_points, axis=0)
+            object_centroid = np.mean(object_points, axis=0)
 
-        object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
-        if object.name == "Person":
-            persons.append(object) # Hidden assumption we will only find one object of each type
-        elif object.name == "Reflector":
-            reflectors.append(object) # Hidden assumption we will only find one object of each type
+            object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp)
+            if object.name == "Person":
+                persons.append(object) # Hidden assumption we will only find one object of each type
+            elif object.name == "Reflector":
+                reflectors.append(object) # Hidden assumption we will only find one object of each type
 
-        print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
+            print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
 
-    timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
+        timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
 
-    if i == 10:
-        break
+    with open('reflectors.pkl', 'wb') as file:
+        pickle.dump(reflectors, file)
+    with open('persons.pkl', 'wb') as file:
+        pickle.dump(persons, file)
+    with open('timestamp_to_index.pkl', 'wb') as file:
+        pickle.dump(timestamp_to_index, file)
+    # if i == 10:
+    #     break
+
+### COMPUTE VELOCITIES BETWEEN PCD PAIRS
 
 for i in range(len(reflectors) - 1):
     reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
@@ -201,9 +218,17 @@ for i in range(len(reflectors) - 1):
     reflectors[i].set_velocity(reflector_velocity)
     persons[i].set_velocity(person_velocity)
 
-for key in frame_map:
+### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
+
+reflector_errors = []
+person_errors = []
+
+for i, key in enumerate(frame_map):
     pointcloud_filename = frame_map.get(key)
     timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+
+    if i < 133:
+        continue
 
     if Path("datasets/scene_1/predicted/" + pointcloud_filename).exists():
         dataset_frame_index = int(key)
@@ -216,9 +241,7 @@ for key in frame_map:
             predicted_pcd.point.vz.numpy(),
         ))
 
-        print(predicted_pcd.shape)
-
-        transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -t_lidar_2_left_cam)
+        transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -R_lidar_2_left_cam.T @ t_lidar_2_left_cam)
 
         for figure in figures_on_frame:
             object_geometry = figure.geometry
@@ -235,15 +258,38 @@ for key in frame_map:
             object_points = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
             object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
-            visualize_points(object_points, f"Predicted Points Frame {timestamp_to_index[str(timestamp)]}")
+
+            if object_points.size == 0:
+                # Likely moved out of range
+                # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
+                # print(f"What happened: frame {i}, timestamp {timestamp}")
+                # print(np.isnan(object_points).any())
+                continue
+            # visualize_points(object_points, f"Predicted Points Frame {timestamp_to_index[str(timestamp)]}")
+            # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
 
             object_vx = np.mean(object_points[:,3])
             object_vy = np.mean(object_points[:,4])
             object_vz = np.mean(object_points[:,5])
 
+            object_velocity = np.array([object_vx, object_vy, object_vz])
             if figure.parent_object.obj_class.name == "Person":
-                visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                print(f"Person has velocity {persons[timestamp_to_index[str(timestamp)]].velocity}, pred: {np.array([object_vx, object_vy, object_vz])}, diff {persons[timestamp_to_index[str(timestamp)]].velocity - np.array([object_vx, object_vy, object_vz])}")
+                gt_velocity = persons[timestamp_to_index[str(timestamp)]].velocity
+                mse = np.square(gt_velocity - object_velocity)
+                # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                print(f"Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, mse {mse}")
+                person_errors.append(mse)
             elif figure.parent_object.obj_class.name == "Reflector":
-                visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                print(f"Reflector has velocity {reflectors[timestamp_to_index[str(timestamp)]].velocity}, pred: {np.array([object_vx, object_vy, object_vz])}, diff {reflectors[timestamp_to_index[str(timestamp)]].velocity - np.array([object_vx, object_vy, object_vz])}")
+                gt_velocity = reflectors[timestamp_to_index[str(timestamp)]].velocity
+                mse = np.square(gt_velocity - object_velocity)
+                # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                print(f"Frame {i}: Reflector has velocity {gt_velocity}, pred: {object_velocity}, mse {mse}")
+                reflector_errors.append(mse)
+
+    if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
+        break
+
+reflector_errors = np.array(reflector_errors)
+person_errors = np.array(person_errors)
+print(f"Average MSE Person: {np.mean(person_errors, axis=0)}, total: {np.mean(person_errors)}")
+print(f"Average MSE Reflector: {np.mean(reflector_errors, axis=0)}, total: {np.mean(reflector_errors)}")
