@@ -115,11 +115,9 @@ def visualize_pointcloud_with_arrow(point_cloud, position, dimensions, rotation_
 def extract_points_inside_bbox(point_cloud, position, dimensions, rotation_vector):
     """Extracts points within the rotated bounding box. Retains additional fields"""
     # Move points to object-centered frame
-    centered_points = point_cloud[:, :3] - position
-
-    # Apply inverse rotation to align with object frame
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
-    transformed_points = np.dot(rotation_matrix.T, centered_points.T).T
+
+    transformed_points = transform_points(point_cloud[:, :3], rotation_matrix.T, -rotation_matrix.T @ position)
 
     # Check which points are within the bounding box (axis-aligned in transformed space)
     half_dims = dimensions / 2
@@ -127,14 +125,10 @@ def extract_points_inside_bbox(point_cloud, position, dimensions, rotation_vecto
     within_y = (-half_dims[1] <= transformed_points[:, 1]) & (transformed_points[:, 1] <= half_dims[1])
     within_z = (-half_dims[2] <= transformed_points[:, 2]) & (transformed_points[:, 2] <= half_dims[2])
 
-    # Extract points inside bounding box
+    # Extract points that belong inside bounding box (in the original frame)
     filtered_points = point_cloud[within_x & within_y & within_z]
 
-    # Transform points back to original frame
-    filtered_original_points = apply_rotation(filtered_points, rotation_vector)
-    filtered_original_points[:, :3] += position
-
-    return filtered_original_points
+    return filtered_points
 
 class Object():
     def __init__(self, name, centroid, timestamp, points=None):
@@ -222,6 +216,7 @@ else:
             object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
             object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
             # visualize_points(object_points)
+            # visualize_pointcloud_with_bbox(np.concatenate((point_cloud_data, object_points)), position_vec, dimension_vec, rotation_vector)
 
             object_centroid = np.mean(object_points, axis=0)
 
@@ -325,8 +320,8 @@ for i, key in enumerate(frame_map):
             object_velocity = np.array([object_vz, -object_vx, -object_vy])
 
             object_centroid = np.mean(object_points[:, :3], axis=0)
-            print(object_centroid)
-            visualize_pointcloud_with_arrow(predicted_pcd, position_vec, dimension_vec, rotation_vector, object_centroid, object_velocity)
+            # print(object_centroid)
+            # visualize_pointcloud_with_arrow(predicted_pcd, position_vec, dimension_vec, rotation_vector, object_centroid, object_velocity)
 
             mask = np.linalg.norm(point_cloud_data, axis=1) < 6
             mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
@@ -338,8 +333,8 @@ for i, key in enumerate(frame_map):
                 person_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
                 # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                print(persons[timestamp_to_index[str(timestamp)]].centroid)
-                visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity)
+                # print(persons[timestamp_to_index[str(timestamp)]].centroid)
+                # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity)
                 print(f'Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {person_errors["Velocity Error"][-1]}, Component Wise: {person_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{person_errors["Velocity Magnitude Error"][-1]}')
             elif figure.parent_object.obj_class.name == "Reflector":
                 gt_velocity = reflectors[timestamp_to_index[str(timestamp)]].velocity
@@ -349,8 +344,8 @@ for i, key in enumerate(frame_map):
                 reflector_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
                 # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                print(reflectors[timestamp_to_index[str(timestamp)]].centroid)
-                visualize_pointcloud_with_arrow((point_cloud_data[mask & mask2], reflectors[timestamp_to_index[str(timestamp)]].points), position_vec, dimension_vec, rotation_vector, reflectors[timestamp_to_index[str(timestamp)]].centroid, gt_velocity)
+                # print(reflectors[timestamp_to_index[str(timestamp)]].centroid)
+                # visualize_pointcloud_with_arrow(point_cloud_data[mask & mask2], position_vec, dimension_vec, rotation_vector, reflectors[timestamp_to_index[str(timestamp)]].centroid, gt_velocity)
                 print(f'Frame {i}: Reflector has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {reflector_errors["Velocity Error"][-1]}, Component Wise: {reflector_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{reflector_errors["Velocity Magnitude Error"][-1]}')
 
     if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
