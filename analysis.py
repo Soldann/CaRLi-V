@@ -200,6 +200,17 @@ else:
 
         timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
 
+    ### COMPUTE VELOCITIES BETWEEN PCD PAIRS
+
+    for i in range(len(reflectors) - 1):
+        reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
+        person_velocity = (persons[i + 1].centroid - persons[i].centroid) / (persons[i + 1].timestamp - persons[i].timestamp)
+        print(f"Velocity at frame {i}: Reflector: {reflector_velocity}, Person: {person_velocity}, time difference: {reflectors[i + 1].timestamp - reflectors[i].timestamp}")
+        reflectors[i].set_velocity(reflector_velocity)
+        persons[i].set_velocity(person_velocity)
+
+    ### SAVE GTs
+
     with open('reflectors.pkl', 'wb') as file:
         pickle.dump(reflectors, file)
     with open('persons.pkl', 'wb') as file:
@@ -209,26 +220,27 @@ else:
     # if i == 10:
     #     break
 
-### COMPUTE VELOCITIES BETWEEN PCD PAIRS
-
-for i in range(len(reflectors) - 1):
-    reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
-    person_velocity = (persons[i + 1].centroid - persons[i].centroid) / (persons[i + 1].timestamp - persons[i].timestamp)
-    print(f"Velocity at frame {i}: Reflector: {reflector_velocity}, Person: {person_velocity}, time difference: {reflectors[i + 1].timestamp - reflectors[i].timestamp}")
-    reflectors[i].set_velocity(reflector_velocity)
-    persons[i].set_velocity(person_velocity)
-
 ### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
 
-reflector_errors = []
-person_errors = []
+reflector_errors = {
+    "Velocity Error": [],
+    "Absolute Component Wise Error": [],
+    "Velocity Magnitude Error": [],
+}
+person_errors = {
+    "Velocity Error": [],
+    "Absolute Component Wise Error": [],
+    "Velocity Magnitude Error": [],
+}
 
 for i, key in enumerate(frame_map):
     pointcloud_filename = frame_map.get(key)
     timestamp = float(pointcloud_filename.removesuffix(".pcd"))
 
-    if i < 133:
+    if i < 0:
         continue
+    point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
+    point_cloud_data = point_cloud_points
 
     if Path("datasets/scene_1/predicted/" + pointcloud_filename).exists():
         dataset_frame_index = int(key)
@@ -258,6 +270,7 @@ for i, key in enumerate(frame_map):
             object_points = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
             object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
+            # mask = np.linalg.norm(object_points[:,3:6], axis=1) > 0.01
 
             if object_points.size == 0:
                 # Likely moved out of range
@@ -272,24 +285,35 @@ for i, key in enumerate(frame_map):
             object_vy = np.mean(object_points[:,4])
             object_vz = np.mean(object_points[:,5])
 
-            object_velocity = np.array([object_vx, object_vy, object_vz])
+            # object_velocity = np.array([object_vx, object_vy, object_vz])
+            # These velocities are in camera coordinates (x right, y down, z forward), convert to ROS format (x forward, y left, z up)
+            object_velocity = np.array([object_vz, -object_vx, -object_vy])
+
+            mask = np.linalg.norm(point_cloud_data, axis=1) < 6
+            mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
             if figure.parent_object.obj_class.name == "Person":
                 gt_velocity = persons[timestamp_to_index[str(timestamp)]].velocity
-                mse = np.square(gt_velocity - object_velocity)
+
+                person_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+                person_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                person_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
+
                 # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                print(f"Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, mse {mse}")
-                person_errors.append(mse)
+                # visualize_pointcloud_with_bbox(point_cloud_data[mask & mask2], position_vec, dimension_vec, rotation_vector)
+                print(f'Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {person_errors["Velocity Error"][-1]}, Component Wise: {person_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{person_errors["Velocity Magnitude Error"][-1]}')
             elif figure.parent_object.obj_class.name == "Reflector":
                 gt_velocity = reflectors[timestamp_to_index[str(timestamp)]].velocity
-                mse = np.square(gt_velocity - object_velocity)
+
+                reflector_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+                reflector_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                reflector_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
+
                 # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                print(f"Frame {i}: Reflector has velocity {gt_velocity}, pred: {object_velocity}, mse {mse}")
-                reflector_errors.append(mse)
+                # visualize_pointcloud_with_bbox(point_cloud_data[mask & mask2], position_vec, dimension_vec, rotation_vector)
+                print(f'Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {reflector_errors["Velocity Error"][-1]}, Component Wise: {reflector_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{reflector_errors["Velocity Magnitude Error"][-1]}')
 
     if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
         break
 
-reflector_errors = np.array(reflector_errors)
-person_errors = np.array(person_errors)
-print(f"Average MSE Person: {np.mean(person_errors, axis=0)}, total: {np.mean(person_errors)}")
-print(f"Average MSE Reflector: {np.mean(reflector_errors, axis=0)}, total: {np.mean(reflector_errors)}")
+print(f'AVE Person: {np.mean(person_errors["Velocity Error"])}, AAE: {np.mean(person_errors["Absolute Component Wise Error"], axis=0)}, Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
+print(f'AVE Reflector: {np.mean(reflector_errors["Velocity Error"])},  AAE: {np.mean(reflector_errors["Absolute Component Wise Error"], axis=0)}, Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
