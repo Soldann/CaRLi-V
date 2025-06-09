@@ -15,6 +15,8 @@ from carli_v_msgs.msg import StampedFloat32MultiArray
 import matplotlib.pyplot as plt
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
+import open3d as o3d
+import os
 
 def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
     # output in radar coordinates
@@ -85,6 +87,8 @@ class RadarFullVelocityNode(Node):
 
         self.bridge = CvBridge()
         self.point_projection_publisher = self.create_publisher(Image, '/projected_points', 10)
+
+        self.save_pcd = False
 
         # Image delay parameters
         self.image_buffer = deque(maxlen=50)  # store recent image msgs
@@ -266,12 +270,28 @@ class RadarFullVelocityNode(Node):
             if closest_image_uv is not None:
                 full_velocities, mask = self.optical_flow_lidar_fusion(closest_image_uv.array, points, closest_image_uv.dt)
                 points = np.concatenate((points[:,:3], np.zeros((points.shape[0], 4))), axis=1)  # Expand array to be (Nx7) to match desired output
-                self.get_logger().info(f'Published: Points shape {points[mask][:, 3:6].shape}, velocities shape{full_velocities.shape}')
+                # self.get_logger().info(f'Published: Points shape {points[mask][:, 3:6].shape}, velocities shape{full_velocities.shape}')
                 points[mask, 3:] = full_velocities
-                self.get_logger().info(f"velocities {full_velocities}, {(full_velocities == 0).all()}")
-                new_msg = self.numpy_to_pointcloud2(points)
+                # self.get_logger().info(f"velocities {full_velocities}, {(full_velocities == 0).all()}")
+                new_msg = self.numpy_to_pointcloud2(points, timestamp=msg.header.stamp)
                 self.lidar_point_publisher.publish(new_msg)
                 self.publish_velocity_arrows(points[mask, :3], full_velocities)
+
+                if self.save_pcd:
+                    radar_full_velocity_node_file_path = os.path.dirname(os.path.abspath(__file__))
+                    timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+                    pcd_filename = f"{radar_full_velocity_node_file_path}/../../../../datasets/scene_1/predicted/{timestamp}.pcd"
+
+                    # Convert to pcl pointcloud to save
+                    pcd = o3d.t.geometry.PointCloud()
+                    pcd.point["positions"] = o3d.core.Tensor(points[:, :3])
+                    pcd.point["vx"] = o3d.core.Tensor(points[:, 3:4])
+                    pcd.point["vy"] = o3d.core.Tensor(points[:, 4:5])
+                    pcd.point["vz"] = o3d.core.Tensor(points[:, 5:6])
+                    pcd.point["v_full"] = o3d.core.Tensor(points[:, 6:7])
+                    o3d.t.io.write_point_cloud(pcd_filename, pcd, write_ascii=True)
+                    self.get_logger().info(f"Saved PCD file: {pcd_filename}")
+
                 self.get_logger().info(f'Published: Lidar Point Cloud with shape {points.shape}')
             else:
                 self.get_logger().warn('No suitable delayed OPTICAL FLOW message found')

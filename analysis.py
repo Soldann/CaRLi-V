@@ -3,10 +3,12 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
-from typing import List
+from typing import List, Dict
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import open3d as o3d
+from pathlib import Path
 
-def visualize_points(point_cloud):
+def visualize_points(point_cloud, title="Point Cloud Visualization"):
     # Extract X, Y, Z coordinates
     x = point_cloud[:, 0]
     y = point_cloud[:, 1]
@@ -21,19 +23,21 @@ def visualize_points(point_cloud):
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
-    ax.set_title("Point Cloud Visualization")
+    ax.set_title(title)
 
     # Show the plot
     plt.show()
 
 def transform_points(points, rotation_matrix, translation_vector):
-    """Applies rotation and translation to the point cloud."""
-    return (rotation_matrix @ points.T).T + translation_vector
+    """Applies rotation and translation to the point cloud. Preserves additional fields"""
+    translated_points = (rotation_matrix @ points[:, :3].T).T + translation_vector
+    return np.column_stack((translated_points, points[:, 3:]))
 
 def apply_rotation(points, rotation_vector):
-    """Convert rotation vector to matrix and apply rotation."""
+    """Convert rotation vector to matrix and apply rotation. Preserves additional fields"""
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
-    return np.dot(rotation_matrix, points.T).T
+    rotated_points =  np.dot(rotation_matrix, points[:, :3].T).T
+    return np.column_stack((rotated_points, points[:, 3:]))
 
 def get_bounding_box_corners(position, dimensions):
     """Compute 8 corners of the cuboid before rotation."""
@@ -73,9 +77,9 @@ def visualize_pointcloud_with_bbox(point_cloud, position, dimensions, rotation_v
     plt.show()
 
 def extract_points_inside_bbox(point_cloud, position, dimensions, rotation_vector):
-    """Extracts points within the rotated bounding box."""
+    """Extracts points within the rotated bounding box. Retains additional fields"""
     # Move points to object-centered frame
-    centered_points = point_cloud - position
+    centered_points = point_cloud[:, :3] - position
 
     # Apply inverse rotation to align with object frame
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
@@ -91,16 +95,22 @@ def extract_points_inside_bbox(point_cloud, position, dimensions, rotation_vecto
     filtered_points = point_cloud[within_x & within_y & within_z]
 
     # Transform points back to original frame
-    filtered_original_points = apply_rotation(filtered_points, rotation_vector) + position
+    filtered_original_points = apply_rotation(filtered_points, rotation_vector)
+    filtered_original_points[:, :3] += position
 
     return filtered_original_points
 
 class Object():
-    def __init__(self, name, points, centroid, timestamp):
+    def __init__(self, name, centroid, timestamp, points=None):
         self.name = name # If object is person or reflector
-        self.points = points # points inside object
+        if points is not None:
+            self.points = points # points inside object
         self.centroid = centroid # object centroid
         self.timestamp = timestamp # object timestamp
+        self.velocity = None
+
+    def set_velocity(self, velocity):
+        self.velocity = velocity
 
 
 ### LOAD THE DATASET
@@ -124,17 +134,26 @@ ann = sly.PointcloudEpisodeAnnotation.load_json_file(annotation_path, project_me
 
 reflectors : List[Object] = []
 persons : List[Object] = []
+timestamp_to_index : Dict[str, int] = {}
+
+# TRANSFORM FROM LIDAR FRAME TO LEFT_CAMERA_FRAME, WE NEED THIS TO MATCH OUR OUTPUT
+R_lidar_2_left_cam = np.array(
+    [[-0.00261783, -0.94086826,  0.33876256],
+    [ 0.99994174, -0.00601038, -0.00896588],
+    [ 0.01047181,  0.33871935,  0.94082918]]
+)
+t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
 
 # RETRIEVE POINTCLOUDS FOR EACH OBJECT
-for key in frame_map:
-    frame_index = int(key)
-    print(f"Processing index {frame_index}")
-    frame_data = ann.frames.get(frame_index)  # Retrieve frame details
-    objects_on_frame = ann.get_objects_on_frame(frame_index)
+for i, key in enumerate(frame_map):
+    dataset_frame_index = int(key)
+    print(f"Processing index {dataset_frame_index}")
+    frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
+    objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
 
     pointcloud_filename = frame_map.get(key)
 
-    figures_on_frame = ann.get_figures_on_frame(frame_index)
+    figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
     point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
     point_cloud_data = point_cloud_points
 
@@ -157,19 +176,74 @@ for key in frame_map:
         position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
 
         object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
+        object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
         # visualize_points(object_points)
 
         object_centroid = np.mean(object_points, axis=0)
 
-        object = Object(figure.parent_object.obj_class.name, object_points, object_centroid, timestamp)
+        object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
         if object.name == "Person":
-            persons.append(object)
+            persons.append(object) # Hidden assumption we will only find one object of each type
         elif object.name == "Reflector":
-            reflectors.append(object)
+            reflectors.append(object) # Hidden assumption we will only find one object of each type
 
         print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
+
+    timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
+
+    if i == 10:
+        break
 
 for i in range(len(reflectors) - 1):
     reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
     person_velocity = (persons[i + 1].centroid - persons[i].centroid) / (persons[i + 1].timestamp - persons[i].timestamp)
     print(f"Velocity at frame {i}: Reflector: {reflector_velocity}, Person: {person_velocity}, time difference: {reflectors[i + 1].timestamp - reflectors[i].timestamp}")
+    reflectors[i].set_velocity(reflector_velocity)
+    persons[i].set_velocity(person_velocity)
+
+for key in frame_map:
+    pointcloud_filename = frame_map.get(key)
+    timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+
+    if Path("datasets/scene_1/predicted/" + pointcloud_filename).exists():
+        dataset_frame_index = int(key)
+        figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+        predicted_pcd = o3d.t.io.read_point_cloud("datasets/scene_1/predicted/" + pointcloud_filename)
+        predicted_pcd = np.column_stack((
+            predicted_pcd.point.positions.numpy(),
+            predicted_pcd.point.vx.numpy(),
+            predicted_pcd.point.vy.numpy(),
+            predicted_pcd.point.vz.numpy(),
+        ))
+
+        print(predicted_pcd.shape)
+
+        transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -t_lidar_2_left_cam)
+
+        for figure in figures_on_frame:
+            object_geometry = figure.geometry
+            position = object_geometry.position
+            dimensions = object_geometry.dimensions
+
+            rotation = object_geometry.rotation  # Extract rotation vector
+
+            # Convert to np arrays because it's easier
+            rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
+            dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
+            position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+
+            object_points = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
+            object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
+
+            visualize_points(object_points, f"Predicted Points Frame {timestamp_to_index[str(timestamp)]}")
+
+            object_vx = np.mean(object_points[:,3])
+            object_vy = np.mean(object_points[:,4])
+            object_vz = np.mean(object_points[:,5])
+
+            if figure.parent_object.obj_class.name == "Person":
+                visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                print(f"Person has velocity {persons[timestamp_to_index[str(timestamp)]].velocity}, pred: {np.array([object_vx, object_vy, object_vz])}, diff {persons[timestamp_to_index[str(timestamp)]].velocity - np.array([object_vx, object_vy, object_vz])}")
+            elif figure.parent_object.obj_class.name == "Reflector":
+                visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                print(f"Reflector has velocity {reflectors[timestamp_to_index[str(timestamp)]].velocity}, pred: {np.array([object_vx, object_vy, object_vz])}, diff {reflectors[timestamp_to_index[str(timestamp)]].velocity - np.array([object_vx, object_vy, object_vz])}")
