@@ -174,12 +174,12 @@ R_lidar_2_left_cam = np.array(
 )
 t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
 
-if Path("reflectors.pkl").exists():
-    with open('reflectors.pkl', 'rb') as file:
+if Path("datasets/reflectors.pkl").exists():
+    with open('datasets/reflectors.pkl', 'rb') as file:
         reflectors = pickle.load(file)
-    with open('persons.pkl', 'rb') as file:
+    with open('datasets/persons.pkl', 'rb') as file:
         persons = pickle.load(file)
-    with open('timestamp_to_index.pkl', 'rb') as file:
+    with open('datasets/timestamp_to_index.pkl', 'rb') as file:
         timestamp_to_index = pickle.load(file)
 else:
     # RETRIEVE POINTCLOUDS FOR EACH OBJECT
@@ -198,7 +198,7 @@ else:
         timestamp = float(pointcloud_filename.removesuffix(".pcd"))
 
         if len(figures_on_frame) != 2:
-            print("WTFFFFFFF")
+            raise RuntimeError("Expected only two figures")
 
         # Extract points associated with each object
         for figure in figures_on_frame:
@@ -241,11 +241,11 @@ else:
 
     ### SAVE GTs
 
-    with open('reflectors.pkl', 'wb') as file:
+    with open('datasets/reflectors.pkl', 'wb') as file:
         pickle.dump(reflectors, file)
-    with open('persons.pkl', 'wb') as file:
+    with open('datasets/persons.pkl', 'wb') as file:
         pickle.dump(persons, file)
-    with open('timestamp_to_index.pkl', 'wb') as file:
+    with open('datasets/timestamp_to_index.pkl', 'wb') as file:
         pickle.dump(timestamp_to_index, file)
     # if i == 10:
     #     break
@@ -303,10 +303,8 @@ for i, key in enumerate(frame_map):
             # mask = np.linalg.norm(object_points[:,3:6], axis=1) > 0.01
 
             if object_points.size == 0:
-                # Likely moved out of range
+                # The object likely moved out of range of our setup, skip these frames
                 # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
-                # print(f"What happened: frame {i}, timestamp {timestamp}")
-                # print(np.isnan(object_points).any())
                 continue
             # visualize_points(object_points, f"Predicted Points Frame {timestamp_to_index[str(timestamp)]}")
             # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
