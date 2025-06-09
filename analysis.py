@@ -267,7 +267,7 @@ for i, key in enumerate(frame_map):
     pointcloud_filename = frame_map.get(key)
     timestamp = float(pointcloud_filename.removesuffix(".pcd"))
 
-    if i < 0:
+    if i < 0: # Change this to skip some frames at the beginning if needed
         continue
     point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
     point_cloud_data = transform_points(point_cloud_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
@@ -351,5 +351,15 @@ for i, key in enumerate(frame_map):
     if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
         break
 
-print(f'AVE Person: {np.mean(person_errors["Velocity Error"])}, AAE: {np.mean(person_errors["Absolute Component Wise Error"], axis=0)}, Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
-print(f'AVE Reflector: {np.mean(reflector_errors["Velocity Error"])},  AAE: {np.mean(reflector_errors["Absolute Component Wise Error"], axis=0)}, Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
+print(f'AVE Person: {np.mean(person_errors["Velocity Error"])} (std: {np.std(person_errors["Velocity Error"])}), AAE: {np.mean(person_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(person_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
+print(f'AVE Reflector: {np.mean(reflector_errors["Velocity Error"])} (std: {np.std(reflector_errors["Velocity Error"])}),  AAE: {np.mean(reflector_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(reflector_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(reflector_errors["Velocity Magnitude Error"])))}')
+
+overall_errors = {}
+for key in reflector_errors:
+    overall_errors[key] = np.concatenate((reflector_errors[key], person_errors[key]))
+
+print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
+      f' (std: {np.std(overall_errors["Velocity Error"])}),'
+      f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
+      f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
+      f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
