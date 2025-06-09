@@ -5,7 +5,6 @@ Accurate point-wise velocity estimation in 3D is vital for enabling robot intera
 ![CaRLi-V Pipeline Diagram](assets/pipeline_visualization.png)
 The pipeline is divided into three steps: RADAR pre-processing, where raw ADC RADAR data is used to compute the RADAR velocity cube, a dense representation of velocities in the environment; Camera pre-processing, where two consecutive camera images are used to compute optical flow vectors for each pixel in the image; Sensor fusion, where the LiDAR point cloud is projected into both representations to extract radial velocity and optical flow readings, with both estimates combined through a closed-form solution.
 
-
 ![Results Visualization](assets/results_visualization_cropped.png)
 The pipeline is able to (a) discern velocities between different dynamic agents; (b) estimate both radial and tangential velocities, as well as combinations of both, and (c, d) extract velocities from single parts of non-rigid moving agents, such as individual limbs in humans.
 
