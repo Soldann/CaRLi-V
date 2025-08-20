@@ -9,6 +9,9 @@ import open3d as o3d
 from pathlib import Path
 import pickle
 
+SCRIPT_PATH = Path(__file__).parent
+DATASET_PATH = SCRIPT_PATH.parent / 'datasets'
+
 def visualize_points(point_cloud, title="Point Cloud Visualization"):
     # Extract X, Y, Z coordinates
     x = point_cloud[:, 0]
@@ -146,21 +149,21 @@ class Object():
 ### LOAD THE DATASET
 
 # Path to the downloaded annotation JSON file
-annotation_path = "datasets/scene_1/annotation.json"
+annotation_path = DATASET_PATH / "scene_1" / "annotation.json"
 
 # Path to the mapping file
-mapping_file = "datasets/scene_1/frame_pointcloud_map.json"
+mapping_file = DATASET_PATH / "scene_1" / "frame_pointcloud_map.json"
 
 # Load the mapping
-with open(mapping_file, "r") as f:
+with mapping_file.open("r") as f:
     frame_map = json.load(f)
 
 # Load project metadata (assuming you have it downloaded as well)
-project_meta_json = "datasets/meta.json"
-project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(project_meta_json))
+project_meta_json_path = DATASET_PATH / "meta.json"
+project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(str(project_meta_json_path)))
 
 # Load annotation from JSON file
-ann = sly.PointcloudEpisodeAnnotation.load_json_file(annotation_path, project_meta)
+ann = sly.PointcloudEpisodeAnnotation.load_json_file(str(annotation_path), project_meta)
 
 reflectors : List[Object] = []
 persons : List[Object] = []
@@ -174,14 +177,16 @@ R_lidar_2_left_cam = np.array(
 )
 t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
 
-if Path("datasets/reflectors.pkl").exists():
-    with open('datasets/reflectors.pkl', 'rb') as file:
+if (SCRIPT_PATH / 'reflectors.pkl').exists():
+    print("Precomputed GTs found, loading them...")
+    with (SCRIPT_PATH / 'reflectors.pkl').open('rb') as file:
         reflectors = pickle.load(file)
-    with open('datasets/persons.pkl', 'rb') as file:
+    with (SCRIPT_PATH / 'persons.pkl').open('rb') as file:
         persons = pickle.load(file)
-    with open('datasets/timestamp_to_index.pkl', 'rb') as file:
+    with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('rb') as file:
         timestamp_to_index = pickle.load(file)
 else:
+    print("No precomputed GTs found, computing them now...")
     # RETRIEVE POINTCLOUDS FOR EACH OBJECT
     for i, key in enumerate(frame_map):
         dataset_frame_index = int(key)
@@ -192,7 +197,7 @@ else:
         pointcloud_filename = frame_map.get(key)
 
         figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-        point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
+        point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
         point_cloud_data = point_cloud_points
 
         timestamp = float(pointcloud_filename.removesuffix(".pcd"))
@@ -241,11 +246,11 @@ else:
 
     ### SAVE GTs
 
-    with open('datasets/reflectors.pkl', 'wb') as file:
+    with (SCRIPT_PATH / 'reflectors.pkl').open('wb') as file:
         pickle.dump(reflectors, file)
-    with open('datasets/persons.pkl', 'wb') as file:
+    with (SCRIPT_PATH / 'persons.pkl').open('wb') as file:
         pickle.dump(persons, file)
-    with open('datasets/timestamp_to_index.pkl', 'wb') as file:
+    with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('wb') as file:
         pickle.dump(timestamp_to_index, file)
     # if i == 10:
     #     break
@@ -269,13 +274,13 @@ for i, key in enumerate(frame_map):
 
     if i < 0: # Change this to skip some frames at the beginning if needed
         continue
-    point_cloud_points = sly.pointcloud.read("datasets/scene_1/pointcloud/" + pointcloud_filename) # Shape (Nx3)
+    point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
     point_cloud_data = transform_points(point_cloud_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
-    if Path("datasets/scene_1/predicted/" + pointcloud_filename).exists():
+    if (DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename).exists():
         dataset_frame_index = int(key)
         figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-        predicted_pcd = o3d.t.io.read_point_cloud("datasets/scene_1/predicted/" + pointcloud_filename)
+        predicted_pcd = o3d.t.io.read_point_cloud(str(DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename))
         predicted_pcd = np.column_stack((
             predicted_pcd.point.positions.numpy(),
             predicted_pcd.point.vx.numpy(),
