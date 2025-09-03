@@ -8,6 +8,7 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import open3d as o3d
 from pathlib import Path
 import pickle
+import argparse
 
 SCRIPT_PATH = Path(__file__).parent
 DATASET_PATH = SCRIPT_PATH.parent / 'datasets'
@@ -52,7 +53,7 @@ def get_bounding_box_corners(position, dimensions):
     ])
     return corners + position  # Translate to object position
 
-def visualize_pointcloud_with_bbox(point_cloud, position, dimensions, rotation_vector):
+def visualize_pointcloud_with_bbox(point_cloud, position, dimensions, rotation_vector, title="3D Point Cloud with Bounding Box"):
     fig = plt.figure(figsize=(10, 7))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -76,7 +77,7 @@ def visualize_pointcloud_with_bbox(point_cloud, position, dimensions, rotation_v
 
     # Labels
     ax.set_xlabel("X"), ax.set_ylabel("Y"), ax.set_zlabel("Z")
-    ax.set_title("3D Point Cloud with Bounding Box")
+    ax.set_title(title)
 
     plt.show()
 
@@ -145,224 +146,238 @@ class Object():
     def set_velocity(self, velocity):
         self.velocity = velocity
 
+def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
+    ### LOAD THE DATASET
 
-### LOAD THE DATASET
+    # Path to the downloaded annotation JSON file
+    annotation_path = DATASET_PATH / "scene_1" / "annotation.json"
 
-# Path to the downloaded annotation JSON file
-annotation_path = DATASET_PATH / "scene_1" / "annotation.json"
+    # Path to the mapping file
+    mapping_file = DATASET_PATH / "scene_1" / "frame_pointcloud_map.json"
 
-# Path to the mapping file
-mapping_file = DATASET_PATH / "scene_1" / "frame_pointcloud_map.json"
+    # Load the mapping
+    with mapping_file.open("r") as f:
+        frame_map = json.load(f)
 
-# Load the mapping
-with mapping_file.open("r") as f:
-    frame_map = json.load(f)
+    # Load project metadata (assuming you have it downloaded as well)
+    project_meta_json_path = DATASET_PATH / "meta.json"
+    project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(str(project_meta_json_path)))
 
-# Load project metadata (assuming you have it downloaded as well)
-project_meta_json_path = DATASET_PATH / "meta.json"
-project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(str(project_meta_json_path)))
+    # Load annotation from JSON file
+    ann = sly.PointcloudEpisodeAnnotation.load_json_file(str(annotation_path), project_meta)
 
-# Load annotation from JSON file
-ann = sly.PointcloudEpisodeAnnotation.load_json_file(str(annotation_path), project_meta)
+    reflectors : List[Object] = []
+    persons : List[Object] = []
+    timestamp_to_index : Dict[str, int] = {}
 
-reflectors : List[Object] = []
-persons : List[Object] = []
-timestamp_to_index : Dict[str, int] = {}
+    # TRANSFORM FROM LIDAR FRAME TO LEFT_CAMERA_FRAME, WE NEED THIS TO MATCH OUR OUTPUT
+    R_lidar_2_left_cam = np.array(
+        [[-0.00261783, -0.94086826,  0.33876256],
+        [ 0.99994174, -0.00601038, -0.00896588],
+        [ 0.01047181,  0.33871935,  0.94082918]]
+    )
+    t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
 
-# TRANSFORM FROM LIDAR FRAME TO LEFT_CAMERA_FRAME, WE NEED THIS TO MATCH OUR OUTPUT
-R_lidar_2_left_cam = np.array(
-    [[-0.00261783, -0.94086826,  0.33876256],
-    [ 0.99994174, -0.00601038, -0.00896588],
-    [ 0.01047181,  0.33871935,  0.94082918]]
-)
-t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
+    if not force_recompute and (SCRIPT_PATH / 'reflectors.pkl').exists():
+        print("Precomputed GTs found, loading them...")
+        with (SCRIPT_PATH / 'reflectors.pkl').open('rb') as file:
+            reflectors = pickle.load(file)
+        with (SCRIPT_PATH / 'persons.pkl').open('rb') as file:
+            persons = pickle.load(file)
+        with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('rb') as file:
+            timestamp_to_index = pickle.load(file)
+    else:
+        print("No precomputed GTs found, computing them now...")
+        # RETRIEVE POINTCLOUDS FOR EACH OBJECT
+        for i, key in enumerate(frame_map):
+            dataset_frame_index = int(key)
+            print(f"Processing index {dataset_frame_index}")
+            frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
+            objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
 
-if (SCRIPT_PATH / 'reflectors.pkl').exists():
-    print("Precomputed GTs found, loading them...")
-    with (SCRIPT_PATH / 'reflectors.pkl').open('rb') as file:
-        reflectors = pickle.load(file)
-    with (SCRIPT_PATH / 'persons.pkl').open('rb') as file:
-        persons = pickle.load(file)
-    with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('rb') as file:
-        timestamp_to_index = pickle.load(file)
-else:
-    print("No precomputed GTs found, computing them now...")
-    # RETRIEVE POINTCLOUDS FOR EACH OBJECT
+            pointcloud_filename = frame_map.get(key)
+
+            figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+            point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
+            point_cloud_data = point_cloud_points
+
+            timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+
+            if len(figures_on_frame) != 2:
+                raise RuntimeError("Expected only two figures")
+
+            # Extract points associated with each object
+            for figure in figures_on_frame:
+                object_geometry = figure.geometry
+                position = object_geometry.position
+                dimensions = object_geometry.dimensions
+
+                rotation = object_geometry.rotation  # Extract rotation vector
+
+                # Convert to np arrays because it's easier
+                rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
+                dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
+                position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+
+                object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
+                object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
+                if visualize_pointclouds:
+                    visualize_points(object_points, f'Pointcloud for {figure.parent_object.obj_class.name} in Frame {i}')
+                    visualize_pointcloud_with_bbox(np.concatenate((point_cloud_data, object_points)), position_vec, dimension_vec, rotation_vector, f'Bounding Box for {figure.parent_object.obj_class.name} in Full Pointcloud')
+
+                object_centroid = np.mean(object_points, axis=0)
+
+                object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
+                if object.name == "Person":
+                    persons.append(object) # Hidden assumption we will only find one object of each type
+                elif object.name == "Reflector":
+                    reflectors.append(object) # Hidden assumption we will only find one object of each type
+
+                print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
+
+            timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
+
+            if stop_after > 0 and i >= stop_after:
+                print(f"Stopping early after {stop_after} frames as requested")
+                break
+
+        ### COMPUTE VELOCITIES BETWEEN PCD PAIRS
+
+        for i in range(len(reflectors) - 1):
+            reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
+            person_velocity = (persons[i + 1].centroid - persons[i].centroid) / (persons[i + 1].timestamp - persons[i].timestamp)
+            print(f"Velocity at frame {i}: Reflector: {reflector_velocity}, Person: {person_velocity}, time difference: {reflectors[i + 1].timestamp - reflectors[i].timestamp}")
+            reflectors[i].set_velocity(reflector_velocity)
+            persons[i].set_velocity(person_velocity)
+
+        ### SAVE GTs
+
+        with (SCRIPT_PATH / 'reflectors.pkl').open('wb') as file:
+            pickle.dump(reflectors, file)
+        with (SCRIPT_PATH / 'persons.pkl').open('wb') as file:
+            pickle.dump(persons, file)
+        with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('wb') as file:
+            pickle.dump(timestamp_to_index, file)
+
+    ### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
+
+    reflector_errors = {
+        "Velocity Error": [],
+        "Absolute Component Wise Error": [],
+        "Velocity Magnitude Error": [],
+    }
+    person_errors = {
+        "Velocity Error": [],
+        "Absolute Component Wise Error": [],
+        "Velocity Magnitude Error": [],
+    }
+
     for i, key in enumerate(frame_map):
-        dataset_frame_index = int(key)
-        print(f"Processing index {dataset_frame_index}")
-        frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
-        objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
-
         pointcloud_filename = frame_map.get(key)
-
-        figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-        point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
-        point_cloud_data = point_cloud_points
-
         timestamp = float(pointcloud_filename.removesuffix(".pcd"))
 
-        if len(figures_on_frame) != 2:
-            raise RuntimeError("Expected only two figures")
+        if i < 0: # Change this to skip some frames at the beginning if needed
+            continue
+        point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
+        point_cloud_data = transform_points(point_cloud_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
-        # Extract points associated with each object
-        for figure in figures_on_frame:
-            object_geometry = figure.geometry
-            position = object_geometry.position
-            dimensions = object_geometry.dimensions
+        if (DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename).exists():
+            dataset_frame_index = int(key)
+            figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+            predicted_pcd = o3d.t.io.read_point_cloud(str(DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename))
+            predicted_pcd = np.column_stack((
+                predicted_pcd.point.positions.numpy(),
+                predicted_pcd.point.vx.numpy(),
+                predicted_pcd.point.vy.numpy(),
+                predicted_pcd.point.vz.numpy(),
+            ))
 
-            rotation = object_geometry.rotation  # Extract rotation vector
+            transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -R_lidar_2_left_cam.T @ t_lidar_2_left_cam)
 
-            # Convert to np arrays because it's easier
-            rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
-            dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
-            position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+            for figure in figures_on_frame:
+                object_geometry = figure.geometry
+                position = object_geometry.position
+                dimensions = object_geometry.dimensions
 
-            object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
-            object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
-            # visualize_points(object_points)
-            # visualize_pointcloud_with_bbox(np.concatenate((point_cloud_data, object_points)), position_vec, dimension_vec, rotation_vector)
+                rotation = object_geometry.rotation  # Extract rotation vector
 
-            object_centroid = np.mean(object_points, axis=0)
+                # Convert to np arrays because it's easier
+                rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
+                dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
+                position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
 
-            object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
-            if object.name == "Person":
-                persons.append(object) # Hidden assumption we will only find one object of each type
-            elif object.name == "Reflector":
-                reflectors.append(object) # Hidden assumption we will only find one object of each type
+                object_points = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
+                object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
-            print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
+                # mask = np.linalg.norm(object_points[:,3:6], axis=1) > 0.01
 
-        timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
+                if object_points.size == 0:
+                    # The object likely moved out of range of our setup, skip these frames
+                    # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
+                    continue
+                if visualize_pointclouds:
+                    visualize_points(object_points, f"Points in {figure.parent_object.obj_class.name} BBox of Predicted Frame {timestamp_to_index[str(timestamp)]}")
+                    visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector, f"Location of {figure.parent_object.obj_class.name} BBox in Predicted Frame {timestamp_to_index[str(timestamp)]}")
 
-    ### COMPUTE VELOCITIES BETWEEN PCD PAIRS
+                object_vx = np.mean(object_points[:,3])
+                object_vy = np.mean(object_points[:,4])
+                object_vz = np.mean(object_points[:,5])
 
-    for i in range(len(reflectors) - 1):
-        reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
-        person_velocity = (persons[i + 1].centroid - persons[i].centroid) / (persons[i + 1].timestamp - persons[i].timestamp)
-        print(f"Velocity at frame {i}: Reflector: {reflector_velocity}, Person: {person_velocity}, time difference: {reflectors[i + 1].timestamp - reflectors[i].timestamp}")
-        reflectors[i].set_velocity(reflector_velocity)
-        persons[i].set_velocity(person_velocity)
+                # object_velocity = np.array([object_vx, object_vy, object_vz])
+                # These velocities are in camera coordinates (x right, y down, z forward), convert to ROS format (x forward, y left, z up)
+                object_velocity = np.array([object_vz, -object_vx, -object_vy])
 
-    ### SAVE GTs
+                object_centroid = np.mean(object_points[:, :3], axis=0)
+                # print(object_centroid)
+                # visualize_pointcloud_with_arrow(predicted_pcd, position_vec, dimension_vec, rotation_vector, object_centroid, object_velocity) # not working because not all in the same coordinate frame
 
-    with (SCRIPT_PATH / 'reflectors.pkl').open('wb') as file:
-        pickle.dump(reflectors, file)
-    with (SCRIPT_PATH / 'persons.pkl').open('wb') as file:
-        pickle.dump(persons, file)
-    with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('wb') as file:
-        pickle.dump(timestamp_to_index, file)
-    # if i == 10:
-    #     break
+                mask = np.linalg.norm(point_cloud_data, axis=1) < 6
+                mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
+                if figure.parent_object.obj_class.name == "Person":
+                    gt_velocity = persons[timestamp_to_index[str(timestamp)]].velocity
 
-### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
+                    person_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+                    person_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                    person_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
-reflector_errors = {
-    "Velocity Error": [],
-    "Absolute Component Wise Error": [],
-    "Velocity Magnitude Error": [],
-}
-person_errors = {
-    "Velocity Error": [],
-    "Absolute Component Wise Error": [],
-    "Velocity Magnitude Error": [],
-}
+                    # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                    # print(persons[timestamp_to_index[str(timestamp)]].centroid)
+                    # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
+                    print(f'Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {person_errors["Velocity Error"][-1]}, Component Wise: {person_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{person_errors["Velocity Magnitude Error"][-1]}')
+                elif figure.parent_object.obj_class.name == "Reflector":
+                    gt_velocity = reflectors[timestamp_to_index[str(timestamp)]].velocity
 
-for i, key in enumerate(frame_map):
-    pointcloud_filename = frame_map.get(key)
-    timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+                    reflector_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+                    reflector_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                    reflector_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
-    if i < 0: # Change this to skip some frames at the beginning if needed
-        continue
-    point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
-    point_cloud_data = transform_points(point_cloud_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
+                    # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                    # print(reflectors[timestamp_to_index[str(timestamp)]].centroid)
+                    # visualize_pointcloud_with_arrow(point_cloud_data[mask & mask2], position_vec, dimension_vec, rotation_vector, reflectors[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
+                    print(f'Frame {i}: Reflector has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {reflector_errors["Velocity Error"][-1]}, Component Wise: {reflector_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{reflector_errors["Velocity Magnitude Error"][-1]}')
 
-    if (DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename).exists():
-        dataset_frame_index = int(key)
-        figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-        predicted_pcd = o3d.t.io.read_point_cloud(str(DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename))
-        predicted_pcd = np.column_stack((
-            predicted_pcd.point.positions.numpy(),
-            predicted_pcd.point.vx.numpy(),
-            predicted_pcd.point.vy.numpy(),
-            predicted_pcd.point.vz.numpy(),
-        ))
+        if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
+            break
 
-        transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -R_lidar_2_left_cam.T @ t_lidar_2_left_cam)
+    print(f'AVE Person: {np.mean(person_errors["Velocity Error"])} (std: {np.std(person_errors["Velocity Error"])}), AAE: {np.mean(person_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(person_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
+    print(f'AVE Reflector: {np.mean(reflector_errors["Velocity Error"])} (std: {np.std(reflector_errors["Velocity Error"])}),  AAE: {np.mean(reflector_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(reflector_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(reflector_errors["Velocity Magnitude Error"])))}')
 
-        for figure in figures_on_frame:
-            object_geometry = figure.geometry
-            position = object_geometry.position
-            dimensions = object_geometry.dimensions
+    overall_errors = {}
+    for key in reflector_errors:
+        overall_errors[key] = np.concatenate((reflector_errors[key], person_errors[key]))
 
-            rotation = object_geometry.rotation  # Extract rotation vector
+    print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
+        f' (std: {np.std(overall_errors["Velocity Error"])}),'
+        f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
+        f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
+        f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
 
-            # Convert to np arrays because it's easier
-            rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
-            dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
-            position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+if __name__ == "__main__":
+    # Read command line arguments
+    parser = argparse.ArgumentParser(description="Evaluate point cloud velocity predictions.")
+    parser.add_argument('--stop-after', type=int, default=-1, help='Stop processing after this many frames. By default, process all frames.')
+    parser.add_argument('--visualize-pointclouds', action='store_true', help='Visualize point clouds and bounding boxes.')
+    parser.add_argument('--force-recompute', action='store_true', help='Force recomputation of GTs even if precomputed files exist.')
+    args = parser.parse_args()
 
-            object_points = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
-            object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
-
-            # mask = np.linalg.norm(object_points[:,3:6], axis=1) > 0.01
-
-            if object_points.size == 0:
-                # The object likely moved out of range of our setup, skip these frames
-                # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
-                continue
-            # visualize_points(object_points, f"Predicted Points Frame {timestamp_to_index[str(timestamp)]}")
-            # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
-
-            object_vx = np.mean(object_points[:,3])
-            object_vy = np.mean(object_points[:,4])
-            object_vz = np.mean(object_points[:,5])
-
-            # object_velocity = np.array([object_vx, object_vy, object_vz])
-            # These velocities are in camera coordinates (x right, y down, z forward), convert to ROS format (x forward, y left, z up)
-            object_velocity = np.array([object_vz, -object_vx, -object_vy])
-
-            object_centroid = np.mean(object_points[:, :3], axis=0)
-            # print(object_centroid)
-            # visualize_pointcloud_with_arrow(predicted_pcd, position_vec, dimension_vec, rotation_vector, object_centroid, object_velocity)
-
-            mask = np.linalg.norm(point_cloud_data, axis=1) < 6
-            mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
-            if figure.parent_object.obj_class.name == "Person":
-                gt_velocity = persons[timestamp_to_index[str(timestamp)]].velocity
-
-                person_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
-                person_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
-                person_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
-
-                # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                # print(persons[timestamp_to_index[str(timestamp)]].centroid)
-                # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity)
-                print(f'Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {person_errors["Velocity Error"][-1]}, Component Wise: {person_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{person_errors["Velocity Magnitude Error"][-1]}')
-            elif figure.parent_object.obj_class.name == "Reflector":
-                gt_velocity = reflectors[timestamp_to_index[str(timestamp)]].velocity
-
-                reflector_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
-                reflector_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
-                reflector_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
-
-                # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                # print(reflectors[timestamp_to_index[str(timestamp)]].centroid)
-                # visualize_pointcloud_with_arrow(point_cloud_data[mask & mask2], position_vec, dimension_vec, rotation_vector, reflectors[timestamp_to_index[str(timestamp)]].centroid, gt_velocity)
-                print(f'Frame {i}: Reflector has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {reflector_errors["Velocity Error"][-1]}, Component Wise: {reflector_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{reflector_errors["Velocity Magnitude Error"][-1]}')
-
-    if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
-        break
-
-print(f'AVE Person: {np.mean(person_errors["Velocity Error"])} (std: {np.std(person_errors["Velocity Error"])}), AAE: {np.mean(person_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(person_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
-print(f'AVE Reflector: {np.mean(reflector_errors["Velocity Error"])} (std: {np.std(reflector_errors["Velocity Error"])}),  AAE: {np.mean(reflector_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(reflector_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(reflector_errors["Velocity Magnitude Error"])))}')
-
-overall_errors = {}
-for key in reflector_errors:
-    overall_errors[key] = np.concatenate((reflector_errors[key], person_errors[key]))
-
-print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
-      f' (std: {np.std(overall_errors["Velocity Error"])}),'
-      f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
-      f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
-      f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
+    main(args.stop_after, args.visualize_pointclouds, args.force_recompute)
