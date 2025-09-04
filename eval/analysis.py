@@ -323,9 +323,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 object_vy = np.mean(object_points[:,4])
                 object_vz = np.mean(object_points[:,5])
 
-                # object_velocity = np.array([object_vx, object_vy, object_vz])
-                # These velocities are in camera coordinates (x right, y down, z forward), convert to ROS format (x forward, y left, z up)
-                object_velocity = np.array([object_vz, -object_vx, -object_vy])
+                object_velocity = np.array([object_vx, object_vy, object_vz])
 
                 object_centroid = np.mean(object_points[:, :3], axis=0)
                 # print(object_centroid)

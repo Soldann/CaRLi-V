@@ -310,7 +310,7 @@ class RadarFullVelocityNode(Node):
 
         u1, v1, u2, v2 = data[0], data[1], data[2], data[3] # (u1, v1) are the xy coordinates of the first image, (u2, v2) are the xy coordinates of where they end up in the second image
 
-        transformed_pts = self.transform_points(lidar_pcd.T, "vmd3_radar", "zed_left_camera_frame")
+        transformed_pts = self.transform_points(lidar_pcd.T, "vmd3_radar", "zed_left_camera_frame") # In order to apply the RADAR full velocity formula, we need to transform the points into the standard camera coordinate frame
         transformed_pts[[0,1,2],:] = transformed_pts[[1,2,0],:]  # Reorder to (x, y, z)
         transformed_pts[[0,1],:] = -transformed_pts[[0,1],:]  # Invert x and y axis for camera coordinates
         projected_points, mask = self.project_points_to_image(transformed_pts, self.image, self.K_matrix, return_points_only=True)
@@ -352,9 +352,9 @@ class RadarFullVelocityNode(Node):
         # print(u2.shape, v2.shape, vx_radar.shape, vy_radar.shape, vz_radar.shape, r.shape)
         for radial_unit_vector_i, velocity_i, u1_i, v1_i, u2_i, v2_i, distance_to_point in zip(radial_unit_vectors.T, -transformed_pts[3, :], u1_lidar, v1_lidar, u2_lidar, v2_lidar, transformed_pts[2,:]):
             v_x, v_y, v_z = cal_full_v_in_radar(radial_unit_vector_i, velocity_i, distance_to_point, u1_i, v1_i, u2_i, v2_i, np.identity(4), np.identity(4), dt.data)
-            vx.append(v_x)
-            vy.append(v_y)
-            vz.append(v_z)
+            vx.append(v_z) # Note we also perform the transformation back into ROS coordinate frame from standard camera coordinate frame here
+            vy.append(-v_x)
+            vz.append(-v_y)
 
         full_velocity = np.sqrt(np.square(vx) + np.square(vy) + np.square(vz))
 
@@ -382,7 +382,7 @@ class RadarFullVelocityNode(Node):
 
             # Start and end point of the arrow
             arrow.points.append(Point(x=point[0], y=point[1], z=point[2]))
-            end = [point[0] + 0.2*v[2], point[1] - 0.2*v[0], point[2] - 0.2*v[1]] # transform from (z forward, y left, x down) to (z up, y left, x forward)
+            end = [point[0] + 0.2*v[0], point[1] + 0.2*v[1], point[2] + 0.2*v[2]]
             arrow.points.append(Point(x=end[0], y=end[1], z=end[2]))
 
             # Arrow appearance
