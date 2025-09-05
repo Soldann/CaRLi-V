@@ -40,3 +40,16 @@ To run only the radar-lidar fusion node:
 ```
 ros2 launch carli_v radar_mode.launch.py
 ```
+
+
+## Testing
+To reproduce the test results in our paper, you can download our dataset into the folder `/datasets` (public link will be provided later, for now on request only) and run the eval script as follows:
+```
+python3 eval/analysis.py
+```
+
+To use your own dataset, convert it into the [Supervisely format](https://docs.supervisely.com/import-and-export/import/supported-annotation-formats/pointclouds/supervisely) and place it under `/datasets`. 
+You can then export the raw pointclouds from our ROS node implementation as follows:
+```
+ros2 launch carli_v radar_full_velocity.launch.py save_pcd_as:=<name of dataset scene>
+```

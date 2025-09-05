@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 import open3d as o3d
-import os
+import pathlib
 
 def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
     # output in radar coordinates
@@ -88,7 +88,13 @@ class RadarFullVelocityNode(Node):
         self.bridge = CvBridge()
         self.point_projection_publisher = self.create_publisher(Image, '/projected_points', 10)
 
-        self.save_pcd = False
+        self.declare_parameter('save_pcd_as', '')
+        self.save_pcd_as = self.get_parameter('save_pcd_as').get_parameter_value().string_value # Will save the PCD files to a dataset with this name if not empty
+        if self.save_pcd_as:
+            radar_full_velocity_node_file_path = pathlib.Path(__file__).parent.parent.parent.parent.parent
+            (radar_full_velocity_node_file_path / "datasets" / self.save_pcd_as / "predicted").mkdir(parents=True, exist_ok=True) # Create the directory if it doesn't exist
+
+        self.get_logger().info(f"Preparing to save PCDs as: {self.save_pcd_as}")
 
         # Image delay parameters
         self.image_buffer = deque(maxlen=50)  # store recent image msgs
@@ -277,10 +283,10 @@ class RadarFullVelocityNode(Node):
                 self.lidar_point_publisher.publish(new_msg)
                 self.publish_velocity_arrows(points[mask, :3], full_velocities)
 
-                if self.save_pcd:
-                    radar_full_velocity_node_file_path = os.path.dirname(os.path.abspath(__file__))
+                if self.save_pcd_as:
+                    radar_full_velocity_node_file_path = pathlib.Path(__file__).parent.parent.parent.parent.parent
                     timestamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-                    pcd_filename = f"{radar_full_velocity_node_file_path}/../../../../datasets/scene_1/predicted/{timestamp}.pcd"
+                    pcd_filename = radar_full_velocity_node_file_path / "datasets" / self.save_pcd_as / "predicted" / f"{timestamp}.pcd"
 
                     # Convert to pcl pointcloud to save
                     pcd = o3d.t.geometry.PointCloud()
