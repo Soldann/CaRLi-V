@@ -19,37 +19,54 @@ import open3d as o3d
 import pathlib
 
 def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
+    """
+    Compute the full velocity of an object in radar coordinates given its radial velocity and optical flow, as derived in "Full-Velocity Radar Returns by Radar-Camera Fusion" (https://arxiv.org/abs/2108.10637)
+
+    :param radial_direction: unit vector pointing in the radial direction from the radar to the point (in camera coordinates)
+    :param radial_velocity: velocity component in the radial direction, as measured by the radar
+    :param d: distance from the optical center of the second image to the point
+    :param u1: u coordinate of the point in the first image
+    :param v1: v coordinate of the point in the first image
+    :param u2: u coordinate of the point in the second image
+    :param v2: v coordinate of the point in the second image
+    :param T_c2r: transformation matrix from camera to radar coordinates
+    :param T_c2c: transformation matrix from the camera position of the second image to the camera position of the first image
+    :param dt: time difference between the two images
+
+    :returns: vx_f, vy_f, vz_f, the components of the full velocity in the radar coordinate frame
+    """
     # output in radar coordinates
-     # T_c2r is the transformation matrix from camera to radar coordinates
-     r11, r12, r13 = T_c2r[0,:3]
-     r21, r22, r23 = T_c2r[1,:3]
-     r31, r32, r33 = T_c2r[2,:3]
+    # T_c2r is the transformation matrix from camera to radar coordinates
+    r11, r12, r13 = T_c2r[0,:3]
+    r21, r22, r23 = T_c2r[1,:3]
+    r31, r32, r33 = T_c2r[2,:3]
 
-     ra11, ra12, ra13, btx = T_c2c[0,:]
-     ra21, ra22, ra23, bty = T_c2c[1,:]
-     ra31, ra32, ra33, btz = T_c2c[2,:]
+    ra11, ra12, ra13, btx = T_c2c[0,:]
+    ra21, ra22, ra23, bty = T_c2c[1,:]
+    ra31, ra32, ra33, btz = T_c2c[2,:]
 
-     A = np.array([[ra11-u2*ra31, ra12-u2*ra32, ra13-u2*ra33], \
-                   [ra21-v2*ra31, ra22-v2*ra32, ra23-v2*ra33], \
-                   radial_direction] ) # note we take the transpose of T_c2r because we actually want to go from radar to camera
+    A = np.array([[ra11-u2*ra31, ra12-u2*ra32, ra13-u2*ra33], \
+                [ra21-v2*ra31, ra22-v2*ra32, ra23-v2*ra33], \
+                radial_direction] ) # note we take the transpose of T_c2r because we actually want to go from radar to camera
 
-     b = np.array([[((ra31*u1+ra32*v1+ra33)*u2-(ra11*u1+ra12*v1+ra13))*d+u2*btz-btx],\
-                   [((ra31*u1+ra32*v1+ra33)*v2-(ra21*u1+ra22*v1+ra23))*d+v2*btz-bty],\
-                   [(radial_velocity)*dt]]) # TODO: Shouldn't we take the square root of this? To get the velocity magnitude?
+    b = np.array([[((ra31*u1+ra32*v1+ra33)*u2-(ra11*u1+ra12*v1+ra13))*d+u2*btz-btx],\
+                [((ra31*u1+ra32*v1+ra33)*v2-(ra21*u1+ra22*v1+ra23))*d+v2*btz-bty],\
+                [(radial_velocity)*dt]]) # TODO: Shouldn't we take the square root of this? To get the velocity magnitude?
 
-     x = np.squeeze( np.dot( np.linalg.inv(A), b ) )
+    x = np.squeeze( np.dot( np.linalg.inv(A), b ) )
 
-     vx_c, vy_c, vz_c = x[0]/dt, x[1]/dt, x[2]/dt
+    vx_c, vy_c, vz_c = x[0]/dt, x[1]/dt, x[2]/dt
 
-     vr = np.squeeze( np.dot(T_c2r[:3,:3], np.array([[vx_c], [vy_c], [vz_c]])) )
+    vr = np.squeeze( np.dot(T_c2r[:3,:3], np.array([[vx_c], [vy_c], [vz_c]])) )
 
-     vx_f, vy_f, vz_f = vr[0], vr[1], vr[2]
+    vx_f, vy_f, vz_f = vr[0], vr[1], vr[2]
 
-     return vx_f, vy_f, vz_f
+    return vx_f, vy_f, vz_f
 
 
 
 class RadarFullVelocityNode(Node):
+    """This node subscribes to the /optical_flow_uv_map topic and the /lidar_points_with_radial_velocity point cloud topic, and then computes and republishes each lidar point with full velocities using the optical flow information."""
     def __init__(self):
         super().__init__('RadarFullVelocityNode')
         self.optical_flow_subscription = self.create_subscription(
@@ -103,10 +120,13 @@ class RadarFullVelocityNode(Node):
 
     def numpy_to_pointcloud2(self, points, frame_id="zed_left_camera_frame", timestamp=None):
         """
-        Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
-        :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
-        :param frame_id: Reference frame of the point cloud
-        :return: PointCloud2 ROS message
+        Converts a Nx7 numpy array (x, y, z, vx, vy, vz, v_full) into a PointCloud2 ROS2 message.
+
+        :param points: NumPy array of shape (N, 7) with [x, y, z, vx, vy, vz, v_full]
+        :param frame_id: Reference frame of the point cloud (Default value = "zed_left_camera_frame")
+        :param timestamp:  (Default value = None)
+
+        :returns: PointCloud2 ROS message
         """
         fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
@@ -140,7 +160,12 @@ class RadarFullVelocityNode(Node):
     def transform_points(self, points, source_frame, target_frame):
         """
         Take in a pointcloud and transform it from source_frame to target_frame
-        Input: points: DxN numpy array, where D is the dimensionality of the points and N is the number of points
+
+        :param points: DxN numpy array, where D is the dimensionality of the points and N is the number of points
+        :param source_frame: name of the frame the points are currently in
+        :param target_frame: name of the frame the points should be transformed to
+
+        :returns: transformed points as a DxN numpy array
         """
         try:
             # Lookup transform from source_frame to target_frame
@@ -172,9 +197,25 @@ class RadarFullVelocityNode(Node):
             return
 
     def image_callback(self, msg):
+        """
+        Simple callback function to store incoming images in a buffer. These images will be used later in the lidar callback to find the image that is best synchronized with the incoming lidar message.
+
+        :param msg: ROS Image message
+        """
         self.image_buffer.append(msg)
 
     def project_points_to_image(self, points, image, camera_matrix, velocities=None, return_points_only=False):
+        """
+        Projects 3D points onto a 2D image plane using the provided camera matrix and draws them on the image.
+
+        :param points: Numpy array of shape (D, N) where D can be any dimension >= 3, and N is the number of points (e.g., (4, N) for (x, y, z, radial_velocity))
+        :param image: image to draw the points on (as a NumPy array)
+        :param camera_matrix: the K intrinsic camera matrix (3x3 NumPy array)
+        :param velocities:  (Default value = None) Pass in an array of shape (N,) representing the velocities of each point for color coding
+        :param return_points_only:  (Default value = False) If True, the function will return the projected 2D points and a mask instead of drawing on the image (this can be done even if no image is provided)
+
+        :returns: If return_points_only is True, returns a tuple (projected_points_2d, mask) where projected_points_2d is a 2xM array of integer pixel coordinates and mask is a boolean array of length N indicating which points are valid. If return_points_only is False, returns the image with drawn points.
+        """
         # print(points)
         depths = points[2, :]
         min_dist = 1.0 # Distance from the camera below which points are discarded.
@@ -217,6 +258,11 @@ class RadarFullVelocityNode(Node):
             return image
 
     def lidar_callback(self, msg):
+        """
+        Callback function for processing incoming lidar points with radial velocities. It finds the best synchronized optical flow message, computes full velocities for each point, and republishes the points with these velocities.
+
+        :param msg: ROS PointCloud2 message containing lidar points with radial velocities
+        """
         fmt = '<fff f'  # Matches 16 bytes (float32 x3, float32)
         point_step = msg.point_step  # Should be 16 bytes
 
@@ -303,10 +349,24 @@ class RadarFullVelocityNode(Node):
                 self.get_logger().warn('No suitable delayed OPTICAL FLOW message found')
 
     def camera_info_callback(self, msg):
+        """
+        Callback function that stores the camera intrinsic matrix from incoming CameraInfo messages for processing later
+
+        :param msg: ROS CameraInfo message
+        """
         # Extract the K matrix
         self.K_matrix = msg.k.reshape(3, 3)  # Convert to 3x3 matrix
 
     def optical_flow_lidar_fusion(self, optical_flow_msg, lidar_pcd, dt):
+        """
+        Helper function that performs the actual fusion of optical flow and lidar points to compute full velocities
+
+        :param optical_flow_msg: The optical flow message containing the uv map
+        :param lidar_pcd: A pointcloud as a Nx4 numpy array, where each row is (x, y, z, radial_velocity)
+        :param dt: The time between the two images used to compute the optical flow
+
+        :returns: A 4xN numpy array where each row is (vx, vy, vz, v_full) and a mask of length N indicating which points in the original lidar_pcd could have their velocities computed
+        """
         dims = [dim.size for dim in optical_flow_msg.layout.dim]  # Extract dimensions
         data = np.array(optical_flow_msg.data).reshape(dims)  # Reshape array
 
@@ -373,6 +433,13 @@ class RadarFullVelocityNode(Node):
         return velocities, mask
 
     def publish_velocity_arrows(self, lidar_points, velocities, frame_id="zed_left_camera_frame"):
+        """
+        Given a set of lidar points and their corresponding velocities, publish a MarkerArray of arrows to visualize the velocities in RViz.
+
+        :param lidar_points: A Nx3 numpy array of point locations
+        :param velocities: A Nx3 numpy array of point velocities
+        :param frame_id:  (Default value = "zed_left_camera_frame") Frame in which to publish the markers
+        """
         marker_array = MarkerArray()
         for i, (point, v) in enumerate(zip(lidar_points, velocities)):
             if v[3] < 0.1:  # Threshold to avoid noisy low velocities
@@ -411,6 +478,11 @@ class RadarFullVelocityNode(Node):
         self.marker_publisher.publish(marker_array)
 
     def optical_flow_callback(self, msg):
+        """
+        Simple callback function to store incoming optical flow uv maps in a buffer. These uv maps will be used later in the lidar callback to find the uv map that is best synchronized with the incoming lidar message.
+
+        :param msg: ROS message containing the optical flow uv map
+        """
         self.uv_image_buffer.append(msg)
 
 

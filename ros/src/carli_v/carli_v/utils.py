@@ -3,9 +3,10 @@ import numpy as np
 def polar_to_cartesian(polar_points):
     """
     Converts Nx3 NumPy array of (r, theta, phi) to Cartesian coordinates (x, y, z).
-    
+
     :param polar_points: NumPy array of shape (N, 3) with [r, theta, phi]
-    :return: NumPy array of shape (N, 3) with [x, y, z]
+
+    :returns: NumPy array of shape (N, 3) with [x, y, z]
     """
     r, theta, phi = polar_points[:, 0], polar_points[:, 1], polar_points[:, 2]
     
@@ -18,9 +19,10 @@ def polar_to_cartesian(polar_points):
 def cartesian_to_polar(points):
     """
     Converts Nx3 NumPy array of (x, y, z) points to polar coordinates (r, theta, phi).
-    
+
     :param points: NumPy array of shape (N, 3) with [x, y, z]
-    :return: NumPy array of shape (N, 3) with [r, theta, phi] (r in meters, theta/phi in radians)
+
+    :returns: NumPy array of shape (N, 3) with [r, theta, phi] (r in meters, theta/phi in radians)
     """
     x, y, z = points[:, 0], points[:, 1], points[:, 2]
     
@@ -31,6 +33,14 @@ def cartesian_to_polar(points):
     return np.column_stack((r, theta, phi))
 
 def interpolate_array(arr, num_points=4):
+    """
+    Linearly interpolates the input array
+
+    :param arr: numpy array of shape (N,)
+    :param num_points:  (Default value = 4) Number of points to interpolate between each pair of original points
+
+    :returns: numpy array of shape ((N-1)*(num_points+1)+1,)
+    """
     x = np.arange(len(arr))  # Original indices
     x_interp = np.linspace(0, len(arr) - 1, num=(len(arr) - 1) * (num_points + 1) + 1)  # New interpolated indices
     y_interp = np.interp(x_interp, x, arr)  # Perform linear interpolation

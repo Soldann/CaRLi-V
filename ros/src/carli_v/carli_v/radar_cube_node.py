@@ -16,6 +16,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import Point
 
 class RadarProcessor(Node):
+    """This node processes radar ADC data provided as images and fuses it with LiDAR point clouds using the velocity cube method to estimate radial velocities for each LiDAR point"""
     def __init__(self):
         super().__init__('radar_processor')
         self.adc_subscriber = self.create_subscription(
@@ -101,10 +102,13 @@ class RadarProcessor(Node):
 
     def numpy_to_pointcloud2(self, points, frame_id="vmd3_radar", timestamp=None):
         """
-        Converts a Nx3 or Nx4 numpy array (XYZ or XYZ+Intensity) into a PointCloud2 ROS2 message.
-        :param points: NumPy array of shape (N, 3) or (N, 4) with [x, y, z, intensity]
-        :param frame_id: Reference frame of the point cloud
-        :return: PointCloud2 ROS message
+        Converts a numpy array into a PointCloud2 ROS2 message.
+
+        :param points: Numpy array of shape (N, 4) with [x, y, z, radial_velocity]
+        :param frame_id: Reference frame that the pointcloud should be published in (Default value = "vmd3_radar")
+        :param timestamp:  (Default value = None)
+
+        :returns: PointCloud2 ROS message
         """
         fields = [
             PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
@@ -133,6 +137,15 @@ class RadarProcessor(Node):
         return msg
     
     def transform_points(self, points, source_frame, target_frame):
+        """
+        Transform a set of 3D points from the source_frame to the target_frame
+
+        :param points: Numpy array of shape (3, N) with [x, y, z] points
+        :param source_frame: The name of the frame in which the points are currently expressed
+        :param target_frame: The name of the frame the points should be transformed to
+
+        :returns: Numpy array of shape (3, N) where the points are expressed in the target_frame
+        """
         try:
             # Lookup transform from source_frame to target_frame
             transform = self.tf_buffer.lookup_transform(target_frame, source_frame, self.get_clock().now(),  rclpy.duration.Duration(seconds=1.0))
@@ -160,9 +173,20 @@ class RadarProcessor(Node):
             return points
 
     def lidar_callback(self, msg):
+        """
+        Simple callback to store incoming LiDAR messages into a buffer for synchronization with RADAR data later
+
+        :param msg: ROS PointCloud2 message
+        """
         self.lidar_buffer.append(msg)
 
     def process_lidar_with_radar(self, lidar_msg, radar_msg):
+        """
+        Helper function to process a matched pair of LiDAR and RADAR messages
+
+        :param lidar_msg: The ROS2 PointCloud2 message containing LiDAR points with fields [x, y, z, intensity, ring, timestamp]
+        :param radar_msg: The ROS2 Image message containing RADAR ADC data that will be used for timestamping (velocity cube is already stored in self.velocity_cube)
+        """
         # Process the Lidar data
         try:
             fmt = '<fff f H Q'  # Matches 26 bytes (float32 x3, float32, uint16, uint64)
@@ -204,6 +228,11 @@ class RadarProcessor(Node):
             self.get_logger().error(f'Error processing Lidar data: {str(e)}')
 
     def radar_callback(self, msg):
+        """
+        Callback function to process incoming RADAR ADC Image messages into a velocity cube and then call process_lidar_with_radar to fuse with LiDAR data
+
+        :param msg: RADAR ADC data stored as a ROS Image message
+        """
         try:
             # Convert ROS Image to NumPy array
             np_image = np.frombuffer(msg.data, dtype=np.int16).reshape((msg.height, msg.width, 2))
@@ -259,12 +288,11 @@ class RadarProcessor(Node):
 
     def process_ADC(self, current_radar_frame):
         """
-        Take Radar ADC data and process it into various images.
-        Args:
-            current_radar_frame (np.ndarray): Radar ADC data of dimensions (doppler, elevation, azimuth, range)
-        Returns:
-            output_images (dict): Dictionary of processed images, where keys are topic names and values are the corresponding images. 
-                                    Publishers will be automatically created for each topic if they don't already exist.
+        Helper function to take Radar ADC data and process it into the velocity cube.
+
+        :param current_radar_frame: Numpy array of shape (32, 2, 8, 128) containing the radar ADC data for the current frame with dimensions [doppler, elevation, azimuth, range]
+    
+        :returns: (velocity cube, output_images) where velocity cube is a numpy array of shape (elevation, azimuth, range) containing the radial velocities for each bin, and output_images is a dictionary of images useful for debugging
         """
         output_images = {}
 
@@ -315,8 +343,6 @@ class RadarProcessor(Node):
         
         # np.where(np.max(velocity_cube, axis=-1) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
         # np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
-
-        self.velocity_cube = velocity_cube
 
         # magnitude_azimuth_elevation = np.mean(np.mean(magnitude_db, axis=-1), axis=0)[::-1, ::-1]
 
@@ -380,6 +406,13 @@ class RadarProcessor(Node):
     
 
     def publish_velocity_arrows(self, lidar_points, velocities, frame_id="vmd3_radar"):
+        """
+        Helper function to publish a MarkerArray of arrows representing the radial velocities of LiDAR points
+
+        :param lidar_points: The base set of LiDAR points of shape (N, 3)
+        :param velocities: A list of radial velocities corresponding to each LiDAR points of shape (N,)
+        :param frame_id: The coordinate frame in which the LiDAR points are expressed in and which to publish the MarkerArray (Default value = "vmd3_radar")
+        """
         marker_array = MarkerArray()
         for i, (point, v) in enumerate(zip(lidar_points, velocities)):
             if np.abs(v) < 0.1:  # Threshold to avoid noisy low velocities
@@ -421,20 +454,18 @@ class RadarProcessor(Node):
 
     def radar_lidar_fusion(self, lidar_points, velocity_cube):
         """
-        Perform radar-lidar fusion.
-        Args:
-            lidar_points (np.ndarray): Lidar points in polar coordinates. [Nx3]
-            velocity_cube (np.ndarray): Radar velocity cube in polar coordinates. (elevation, azimuth, range)
-        Returns:
-            np.ndarray: Fused point cloud. [Nx4]
-            debug_images (dict): Dictionary of intermediate images, where keys are topic names and values are the corresponding images. 
-                                    Publishers will be automatically created for each topic if they don't already exist.
+        Helper function to extract radial velocities for each LiDAR point from the velocity cube
+
+        :param lidar_points: Numpy array of lidar points in polar coordinates of shape (N, 3) with columns [range, azimuth, elevation]
+        :param velocity_cube: Velocity cube of shape (elevation, azimuth, range) processed from the RADAR ADC data
+
+        :returns: (velocities, debug_images) where velocities is a numpy array of shape (N,) containing the radial velocities for each LiDAR point, and debug_images is a dictionary of images useful for debugging
         """
         debug_images = {}
 
-        range_bins = np.arange(0, self.max_range, self.range_resolution)  # 1-degree bins
-        azimuth_bins = np.arange(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2)/(self.target_azimuth_bins/2))  # 1-degree bins
-        elevation_bins = np.arange(-np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2)/(self.target_elevation_bins/2))  # 1-degree bins
+        range_bins = np.arange(0, self.max_range, self.range_resolution)
+        azimuth_bins = np.arange(-np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2), np.radians(self.radar_h_fov/2)/(self.target_azimuth_bins/2))
+        elevation_bins = np.arange(-np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2), np.radians(self.radar_v_fov/2)/(self.target_elevation_bins/2))
 
         range_indices = np.digitize(lidar_points[:,0], range_bins)  # Assign ranges to bins
         angle_indices = np.digitize(lidar_points[:,1], azimuth_bins)  # Assign angles to bins
@@ -459,12 +490,12 @@ class RadarProcessor(Node):
     
     def apply_threshold(self, image, threshold):
         """
-        Apply a threshold to the image.
-        Args:
-            image (np.ndarray): Input image.
-            threshold (float): Threshold value.
-        Returns:
-            np.ndarray: Thresholded image.
+        Apply thresholding to an image
+
+        :param image: A numpy array representing the image
+        :param threshold: Value to subtract from the max value for thresholding
+
+        :returns: A numpy array that contains only values less than threshold from the max value
         """
         threshold_db = image.max() - threshold
         return np.clip(image, a_min=threshold_db, a_max=None)
@@ -483,11 +514,11 @@ class RadarProcessor(Node):
     
     def scale_image(self, image):
         """
-        Scale the image to 0-255 range for visualization.
-        Args:
-            image (np.ndarray): Input image.
-        Returns:
-            np.ndarray: Scaled image.
+        Scale an image to 0-255 range for consistent visualization.
+
+        :param image: A numpy array representing an image
+
+        :returns: A numpy array where are values have been normalized to the range 0-255
         """
         min_val = np.min(image)
         max_val = np.max(image)
@@ -495,6 +526,13 @@ class RadarProcessor(Node):
         return scaled_image
 
     def create_ros_image(self, np_array, header, scale_image=True):
+        """
+        Create a ROS Image message from a numpy array.
+
+        :param np_array: A numpy array representing the image
+        :param header: ROS Header to attach to the Image message
+        :param scale_image: If True, call scale_image to normalize the image between 0-255 before attaching it to the message (Default value = True)
+        """
         msg = Image()
         msg.header = header
         msg.height, msg.width = np_array.shape

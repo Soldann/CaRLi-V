@@ -13,6 +13,13 @@ import torch
 from carli_v_msgs.msg import StampedFloat32MultiArray
 
 def get_cuda_image(image_path):
+    """
+    Read an image from a file, resize it to 768x432, and move to GPU. This was part of the original NeuFlow v2 implementation.
+
+    :param image_path: Path to the image file
+
+    :returns: Image tensor on GPU
+    """
     image = cv2.imread(image_path)
 
     image = cv2.resize(image, (768, 432))
@@ -21,7 +28,12 @@ def get_cuda_image(image_path):
     return image[None].cuda()
 
 def fuse_conv_and_bn(conv, bn):
-    """Fuse Conv2d() and BatchNorm2d() layers https://tehnokv.com/posts/fusing-batchnorm-and-conv/."""
+    """
+    Fuse Conv2d() and BatchNorm2d() layers https://tehnokv.com/posts/fusing-batchnorm-and-conv/. This was part of the original NeuFlow v2 implementation.
+
+    :param conv: conv layer to fuse
+    :param bn: batch norm layer to fuse
+    """
     fusedconv = (
         torch.nn.Conv2d(
             conv.in_channels,
@@ -50,14 +62,14 @@ def fuse_conv_and_bn(conv, bn):
     return fusedconv
 
 def flow2uv_full(flow, K):
-    '''
+    """
     Convert flow into pixel coordinates of before and after:
-    Returns:
-    - x_map: x coordinates of the first image
-    - y_map: y coordinates of the first image
-    - u_map: new x coordinates of where those pixels end up in the second image
-    - v_map: new y coordinates of where those pixels end up in the second image
-    '''
+
+    :param flow: Numpy matrix of shape (H, W, 2) containing optical flow vectors (dx, dy) in pixels 
+    :param K: Camera intrinsic matrix for the image
+
+    :returns: (u1, v1, u2, v2) where (u1,v1) represent the pixel coordinates before and (u2,v2) are the pixel coordinates after. u1, u2 are of shape (H, W) and represent the horizontal pixel coordinates. v1, v2 are of shape (H, W) and represent the vertical pixel coordinates.
+    """
     f = K[0,0]
     cx = K[0,2]
     cy = K[1,2]
@@ -97,14 +109,12 @@ def plot_flow_cv2(im, flow, color=(255, 0, 255), step=20):
     """
     Draw optical flow arrows on an image using OpenCV.
 
-    Args:
-    - im (numpy array): Image in BGR format.
-    - flow (numpy array): Optical flow array (H, W, 2).
-    - color (tuple): Arrow color in BGR format. Default is cyan.
-    - step (int): Step size for drawing arrows.
+    :param - im: Numpy array of image
+    :param - flow: Numpy array of optical flow vectors (dx, dy) (H, W, 2).
+    :param - color: Arrow color (Default value = (255, 0 , 255))
+    :param - step: Number of pixels between each arrow that is drawn (Default value = 20)
 
-    Returns:
-    - Annotated image with flow visualization.
+    :returns: - Images with optical flow arrows drawn on top
     """
     h, w = im.shape[:2]
     x1, y1 = np.meshgrid(np.arange(0, w), np.arange(0, h))
@@ -126,6 +136,7 @@ def plot_flow_cv2(im, flow, color=(255, 0, 255), step=20):
 
 
 class OpticalFlowNode(Node):
+    """This node continually listens to a camera image topic, computing and republishing a uv map of optical flow vectors using NeuFlow v2"""
     def __init__(self):
         super().__init__('OpticalFlowNode')
         self.bridge = CvBridge()
@@ -172,11 +183,21 @@ class OpticalFlowNode(Node):
         self.get_logger().info('Optical Flow Node Started')
 
     def camera_info_callback(self, msg):
+        """
+        Simply callback function to store the camera intrinsic matrix when it is received
+
+        :param msg: ROS CameraInfo message
+        """
         # Extract the K matrix
         self.K_matrix = msg.k.reshape(3, 3)  # Convert to 3x3 matrix
         # self.get_logger().info(f'Intrinsic Camera Matrix (K):\n{self.K_matrix}')
 
     def image_callback(self, msg):
+        """
+        Callback function that computes and publishes the optical flow uv map between the last image and the newly received image
+
+        :param msg: ROS Image message
+        """
         # Convert compressed image to raw OpenCV image
         bridge = CvBridge()
         cv_image = bridge.imgmsg_to_cv2(msg, "bgr8").astype(np.uint8)  # Convert ROS Image to OpenCV format
