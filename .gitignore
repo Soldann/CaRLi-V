@@ -7,3 +7,4 @@ eval/persons.pkl
 eval/reflectors.pkl
 eval/timestamp_to_index.pkl
 datasets/
+my_venv/

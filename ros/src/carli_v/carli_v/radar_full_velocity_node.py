@@ -18,9 +18,9 @@ from geometry_msgs.msg import Point
 import open3d as o3d
 import pathlib
 
-def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_c2r, T_c2c, dt):
+def cal_full_v(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_c2c, dt):
     """
-    Compute the full velocity of an object in radar coordinates given its radial velocity and optical flow, as derived in "Full-Velocity Radar Returns by Radar-Camera Fusion" (https://arxiv.org/abs/2108.10637)
+    Compute the full velocity of an object in camera coordinates given its radial velocity and optical flow, as derived in "Full-Velocity Radar Returns by Radar-Camera Fusion" (https://arxiv.org/abs/2108.10637)
 
     :param radial_direction: unit vector pointing in the radial direction from the radar to the point (in camera coordinates)
     :param radial_velocity: velocity component in the radial direction, as measured by the radar
@@ -29,18 +29,11 @@ def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_
     :param v1: v coordinate of the point in the first image
     :param u2: u coordinate of the point in the second image
     :param v2: v coordinate of the point in the second image
-    :param T_c2r: transformation matrix from camera to radar coordinates
     :param T_c2c: transformation matrix from the camera position of the second image to the camera position of the first image
     :param dt: time difference between the two images
 
-    :returns: vx_f, vy_f, vz_f, the components of the full velocity in the radar coordinate frame
+    :returns: vx_f, vy_f, vz_f, the components of the full velocity in the camera coordinate frame
     """
-    # output in radar coordinates
-    # T_c2r is the transformation matrix from camera to radar coordinates
-    r11, r12, r13 = T_c2r[0,:3]
-    r21, r22, r23 = T_c2r[1,:3]
-    r31, r32, r33 = T_c2r[2,:3]
-
     ra11, ra12, ra13, btx = T_c2c[0,:]
     ra21, ra22, ra23, bty = T_c2c[1,:]
     ra31, ra32, ra33, btz = T_c2c[2,:]
@@ -55,11 +48,7 @@ def cal_full_v_in_radar(radial_direction, radial_velocity, d, u1, v1, u2, v2, T_
 
     x = np.squeeze( np.dot( np.linalg.inv(A), b ) )
 
-    vx_c, vy_c, vz_c = x[0]/dt, x[1]/dt, x[2]/dt
-
-    vr = np.squeeze( np.dot(T_c2r[:3,:3], np.array([[vx_c], [vy_c], [vz_c]])) )
-
-    vx_f, vy_f, vz_f = vr[0], vr[1], vr[2]
+    vx_f, vy_f, vz_f = x[0]/dt, x[1]/dt, x[2]/dt
 
     return vx_f, vy_f, vz_f
 
@@ -417,7 +406,7 @@ class RadarFullVelocityNode(Node):
         vz = []
         # print(u2.shape, v2.shape, vx_radar.shape, vy_radar.shape, vz_radar.shape, r.shape)
         for radial_unit_vector_i, velocity_i, u1_i, v1_i, u2_i, v2_i, distance_to_point in zip(radial_unit_vectors.T, -transformed_pts[3, :], u1_lidar, v1_lidar, u2_lidar, v2_lidar, transformed_pts[2,:]):
-            v_x, v_y, v_z = cal_full_v_in_radar(radial_unit_vector_i, velocity_i, distance_to_point, u1_i, v1_i, u2_i, v2_i, np.identity(4), np.identity(4), dt.data)
+            v_x, v_y, v_z = cal_full_v(radial_unit_vector_i, velocity_i, distance_to_point, u1_i, v1_i, u2_i, v2_i, np.identity(4), dt.data)
             vx.append(v_z) # Note we also perform the transformation back into ROS coordinate frame from standard camera coordinate frame here
             vy.append(-v_x)
             vz.append(-v_y)
