@@ -34,7 +34,7 @@ class RadarProcessor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Compute RADAR config
-        self.radar_h_fov = 87*2
+        self.radar_h_fov = 50*2
         self.radar_v_fov = 30*2
         self.target_azimuth_bins = 50
         self.target_elevation_bins = 2
@@ -99,6 +99,8 @@ class RadarProcessor(Node):
         self.lidar_delay_sec = 0.1  # delay in seconds (100ms)
 
         self.marker_publisher = self.create_publisher(MarkerArray, '/lidar_velocity_arrows', 10)
+
+        self.save_image = False
 
     def numpy_to_pointcloud2(self, points, frame_id="vmd3_radar", timestamp=None):
         """
@@ -344,15 +346,23 @@ class RadarProcessor(Node):
         # np.where(np.max(velocity_cube, axis=-1) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
         # np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
 
-        # magnitude_azimuth_elevation = np.mean(np.mean(magnitude_db, axis=-1), axis=0)[::-1, ::-1]
+        thresholded_magnitude = self.apply_threshold(magnitude_db, 5)
+        magnitude_azimuth_elevation = np.mean(np.mean(thresholded_magnitude, axis=0), axis=0)[::-1, ::-1]
 
-        # # Relative thresholding
-        # # thresholded_magnitude_azimuth_elevation = self.apply_threshold(magnitude_azimuth_elevation, 3)
-        # # Absolute thresholding
+        # Relative thresholding
+        # thresholded_magnitude_azimuth_elevation = self.apply_threshold(magnitude_azimuth_elevation, 3)
+        # Absolute thresholding
         # threshold_db = 19 #db
         # thresholded_magnitude_azimuth_elevation = np.clip(magnitude_azimuth_elevation, threshold_db, None)
-        # # Output image
-        # output_images['magnitude_azimuth_elevation'] = self.scale_image(thresholded_magnitude_azimuth_elevation)
+        # Output image
+        output_images['magnitude_azimuth_elevation'] = self.scale_image(magnitude_azimuth_elevation)
+
+        if self.save_image == False:
+            # save as png
+            from PIL import Image as PILImage
+            pil_image = PILImage.fromarray(self.scale_image(magnitude_azimuth_elevation).astype(np.uint8))
+            pil_image.save('magnitude_azimuth_elevation.png')
+            self.save_image = True
 
         # amplitude_azimuth_elevation = (np.mean(np.mean(np.real(angle_fft), axis=-1), axis=0)[::-1, ::-1])
         # amplitude_azimuth_elevation += abs(np.min(amplitude_azimuth_elevation))
@@ -377,7 +387,7 @@ class RadarProcessor(Node):
         # output_images['amplitude_azimuth_elevation'] = self.scale_image(amplitude_azimuth_elevation)
         # output_images['phase_azimuth_elevation'] = self.scale_image(phase_azimuth_elevation)
 
-        # output_images['range_azimuth'] = 20 * np.log(np.mean(np.mean(np.abs(angle_fft), axis=1), axis=0))
+        output_images['range_azimuth'] = 20 * np.log(np.mean(np.mean(np.abs(angle_fft), axis=1), axis=0))
 
         # output_images['velocity_azimuth_elevation'] = np.where(np.abs(np.max(velocity_cube, axis=-1)) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))[::-1, ::-1] + 16
         # output_images['velocity_range_azimuth'] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0))[:, ::-1] + 16
