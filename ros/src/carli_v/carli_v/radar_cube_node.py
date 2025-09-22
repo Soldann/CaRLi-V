@@ -34,7 +34,7 @@ class RadarProcessor(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # Compute RADAR config
-        self.radar_h_fov = 87*2
+        self.radar_h_fov = 50*2
         self.radar_v_fov = 30*2
         self.target_azimuth_bins = 50
         self.target_elevation_bins = 2
