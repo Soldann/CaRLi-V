@@ -29,27 +29,36 @@ source install/setup.bash
 ```
 
 ## Usage
-Several launch files exist to facilitate the running of the pipeline. We will soon provide the dataset the pipeline was developed with. 
+Several launch files exist to facilitate the running of the pipeline. If running on live data, the nodes expect LiDAR messages to be broadcast on the topic `/hesai_lidar` as a PointCloud2 topic, RADAR ADC data to be broadcast as an Image on `/radar_ADC`, and image data in `/camera/image_raw`. Otherwise, see [Testing](#testing) for testing with an annotated dataset.
 
 To run the full pipeline:
 ```
 ros2 launch carli_v radar_full_velocity.launch.py
 ```
 
-To run only the radar-lidar fusion node:
+To run only the radar-lidar fusion node (for radial velocities only):
 ```
 ros2 launch carli_v radar_mode.launch.py
 ```
 
-
 ## Testing
-To reproduce the test results in our paper, you can download our dataset into the folder `/datasets` (public link will be provided later, for now on request only) and run the eval script as follows:
-```
-python3 eval/analysis.py
-```
+To reproduce the test results in our paper, download our annotated ground-truth dataset into the folder `/datasets` under this repository (public link will be provided later, for now on request only). You will need to download the rosbag of sensor data seperately as well.
 
-To use your own dataset, convert it into the [Supervisely format](https://docs.supervisely.com/import-and-export/import/supported-annotation-formats/pointclouds/supervisely) and place it under `/datasets`. 
+<details>
+<summary>
+Steps for using a custom ground-truth dataset
+</summary>
+If using a custom dataset with our eval script, it should be in [Supervisely format](https://docs.supervisely.com/import-and-export/import/supported-annotation-formats/pointclouds/supervisely). Place the dataset under the folder `/datasets`,  The eval script will analyze objects with the name `Person` or `Reflector` in Scene 1
+</details>
+
 You can then export the raw pointclouds from our ROS node implementation as follows:
 ```
-ros2 launch carli_v radar_full_velocity.launch.py save_pcd_as:=<name of dataset scene>
+ros2 launch carli_v radar_full_velocity.launch.py save_pcd_as:=scene_1
+```
+This will save the output of the pipeline as a PCD file every time a new output is published.
+
+Then install and run the eval script:
+```
+pip install -r eval/requirements.txt
+python3 eval/analysis.py
 ```
