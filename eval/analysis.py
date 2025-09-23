@@ -13,6 +13,18 @@ import argparse
 SCRIPT_PATH = Path(__file__).parent
 DATASET_PATH = SCRIPT_PATH.parent / 'datasets'
 
+def decompose_v(velocity, position):
+    '''
+    Decompose a velocity vector into radial and tangential components
+    :param velocity: np.array of shape (3,) representing the velocity vector of a point
+    :param position: np.array of shape (3,) representing the position vector of a point
+    :return radial_v, tangent_v: (np.array, np.array) of shape (3,) representing the radial and tangential components of the velocity at point position relative to the origin
+    '''
+    radial_v = (np.dot(velocity, position) * position / np.dot(position, position))
+    tangent_v = velocity - radial_v
+    
+    return radial_v, tangent_v
+
 def visualize_points(point_cloud, title="Point Cloud Visualization"):
     # Extract X, Y, Z coordinates
     x = point_cloud[:, 0]
@@ -264,11 +276,17 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     reflector_errors = {
         "Velocity Error": [],
         "Absolute Component Wise Error": [],
+        "Velocity Angular Error": [],
+        "Radial Error": [],
+        "Tangential Error": [],
         "Velocity Magnitude Error": [],
     }
     person_errors = {
         "Velocity Error": [],
         "Absolute Component Wise Error": [],
+        "Velocity Angular Error": [],
+        "Radial Error": [],
+        "Tangential Error": [],
         "Velocity Magnitude Error": [],
     }
 
@@ -336,6 +354,13 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
                     person_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
                     person_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                    person_errors["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
+                    
+                    rad_v, tan_v = decompose_v(object_velocity, object_centroid)
+                    gt_rad_v, gt_tan_v = decompose_v(gt_velocity, persons[timestamp_to_index[str(timestamp)]].centroid)
+                    
+                    person_errors["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
+                    person_errors["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
                     person_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
                     # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
@@ -347,6 +372,14 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
                     reflector_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
                     reflector_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                    reflector_errors["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
+        
+                    rad_v, tan_v = decompose_v(object_velocity, object_centroid)
+                    gt_rad_v, gt_tan_v = decompose_v(gt_velocity, persons[timestamp_to_index[str(timestamp)]].centroid)
+                    
+                    reflector_errors["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
+                    reflector_errors["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
+
                     reflector_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
                     # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
@@ -366,8 +399,8 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
     print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
         f' (std: {np.std(overall_errors["Velocity Error"])}),'
-        f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
-        f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
+        # f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
+        # f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
         f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
 
 if __name__ == "__main__":
