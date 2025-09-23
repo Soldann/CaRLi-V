@@ -333,8 +333,10 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 if figure.parent_object.obj_class.name not in errors:
                     errors[figure.parent_object.obj_class.name] = {
                         "Velocity Error": [],
-                        "Absolute Component Wise Error": [],
+                        # "Absolute Component Wise Error": [],
                         "Velocity Angular Error": [],
+                        "Weighted Velocity Angular Error": [],
+                        "Velocity Magnitudes": [], # This is used to compute the weighted velocity angular error (weighted by the gt velocity magnitude)
                         "Radial Error": [],
                         "Tangential Error": [],
                         "Velocity Magnitude Error": [],
@@ -344,9 +346,11 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
 
                 errors[object_type]["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
-                errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                # errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
                 errors[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
-                
+                errors[object_type]["Weighted Velocity Angular Error"].append(errors[object_type]["Velocity Angular Error"][-1] * np.linalg.norm(gt_velocity))
+                errors[object_type]["Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
+
                 rad_v, tan_v = decompose_v(object_velocity, object_centroid)
                 gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
                 
@@ -357,22 +361,34 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
                 # print(persons[timestamp_to_index[str(timestamp)]].centroid)
                 # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
-                print(f'Frame {i}: {object_type} has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {errors[object_type]["Velocity Error"][-1]}, Component Wise: {errors[object_type]["Absolute Component Wise Error"][-1]}, Magnitude Error:{errors[object_type]["Velocity Magnitude Error"][-1]}')
+                print(f'Frame {i}: {object_type} has velocity {gt_velocity}, pred: {object_velocity},'
+                      f'Velocity error: {errors[object_type]["Velocity Error"][-1]},'
+                    #   f'Component Wise: {errors[object_type]["Absolute Component Wise Error"][-1]},'
+                      f'Angular Error: {errors[object_type]["Velocity Angular Error"][-1]}',
+                      f'Radial Error: {errors[object_type]["Radial Error"][-1]}',
+                      f'Tangential Error: {errors[object_type]["Tangential Error"][-1]}',
+                      f'Magnitude Error:{errors[object_type]["Velocity Magnitude Error"][-1]}')
 
         if i >= len(gt_objects[next(iter(gt_objects))]) - 2: # Don't check the last frame because no gt velocity
             break
 
     for object_type in errors: # Iterate over each object type (eg. person, reflector)
-        print(f'AVE {object_type}: {np.mean(errors[object_type]["Velocity Error"])} (std: {np.std(errors[object_type]["Velocity Error"])}), AAE: {np.mean(errors[object_type]["Absolute Component Wise Error"], axis=0)} (std: {np.std(errors[object_type]["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(errors[object_type]["Velocity Magnitude Error"])))}')
+        print(f'AVE {object_type}: {np.mean(errors[object_type]["Velocity Error"])} (std: {np.std(errors[object_type]["Velocity Error"])}), '
+            #   f'AAE: {np.mean(errors[object_type]["Absolute Component Wise Error"], axis=0)} (std: {np.std(errors[object_type]["Absolute Component Wise Error"], axis=0)}), '
+              f'Magnitude RMSE: {np.sqrt(np.mean(np.square(errors[object_type]["Velocity Magnitude Error"])))}')
 
     overall_errors = {}
     for key in errors[next(iter(errors))]: # Each object type has the same keys
         overall_errors[key] = np.concatenate([errors[object_type][key] for object_type in errors])
 
     print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
-        f' (std: {np.std(overall_errors["Velocity Error"])}),'
+        f' (std: {np.std(overall_errors["Velocity Error"])}), '
         # f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
         # f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
+        f'Mean Angular Error: {np.mean(overall_errors["Velocity Angular Error"])}, ',
+        f'Weighted Mean Angular Error: {np.sum(overall_errors["Weighted Velocity Angular Error"]) / (np.sum(overall_errors["Velocity Magnitudes"]) + 1e-6)}, ',
+        f'Mean Radial Error: {np.mean(overall_errors["Radial Error"])}, ',
+        f'Mean Tangential Error: {np.mean(overall_errors["Tangential Error"])}, ',
         f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
 
 if __name__ == "__main__":
