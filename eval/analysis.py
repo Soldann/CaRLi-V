@@ -178,8 +178,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     # Load annotation from JSON file
     ann = sly.PointcloudEpisodeAnnotation.load_json_file(str(annotation_path), project_meta)
 
-    reflectors : List[Object] = []
-    persons : List[Object] = []
+    gt_objects : Dict[str, List[Object]] = {}
     timestamp_to_index : Dict[str, int] = {}
 
     # TRANSFORM FROM LIDAR FRAME TO LEFT_CAMERA_FRAME, WE NEED THIS TO MATCH OUR OUTPUT
@@ -190,12 +189,10 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     )
     t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
 
-    if not force_recompute and (SCRIPT_PATH / 'reflectors.pkl').exists():
+    if not force_recompute and (SCRIPT_PATH / 'objects.pkl').exists():
         print("Precomputed GTs found, loading them...")
-        with (SCRIPT_PATH / 'reflectors.pkl').open('rb') as file:
-            reflectors = pickle.load(file)
-        with (SCRIPT_PATH / 'persons.pkl').open('rb') as file:
-            persons = pickle.load(file)
+        with (SCRIPT_PATH / 'objects.pkl').open('rb') as file:
+            gt_objects = pickle.load(file)
         with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('rb') as file:
             timestamp_to_index = pickle.load(file)
     else:
@@ -240,10 +237,11 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 object_centroid = np.mean(object_points, axis=0)
 
                 object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
-                if object.name == "Person":
-                    persons.append(object) # Hidden assumption we will only find one object of each type
-                elif object.name == "Reflector":
-                    reflectors.append(object) # Hidden assumption we will only find one object of each type
+
+                if object.name not in gt_objects:
+                    gt_objects[object.name] = [] # Initialize list if it is the first time we see this object type
+
+                gt_objects[object.name].append(object) # Hidden assumption we will only find one object of each type
 
                 print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
 
@@ -254,41 +252,23 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 break
 
         ### COMPUTE VELOCITIES BETWEEN PCD PAIRS
-
-        for i in range(len(reflectors) - 1):
-            reflector_velocity = (reflectors[i + 1].centroid - reflectors[i].centroid) / (reflectors[i + 1].timestamp - reflectors[i].timestamp)
-            person_velocity = (persons[i + 1].centroid - persons[i].centroid) / (persons[i + 1].timestamp - persons[i].timestamp)
-            print(f"Velocity at frame {i}: Reflector: {reflector_velocity}, Person: {person_velocity}, time difference: {reflectors[i + 1].timestamp - reflectors[i].timestamp}")
-            reflectors[i].set_velocity(reflector_velocity)
-            persons[i].set_velocity(person_velocity)
+        for object_type in gt_objects: # Iterate over each object type (eg. person, reflector)
+            object = gt_objects[object_type]
+            for i in range(len(object) - 1):
+                object_velocity = (object[i + 1].centroid - object[i].centroid) / (object[i + 1].timestamp - object[i].timestamp)
+                print(f"Velocity at frame {i}: {object[0].name}: {object_velocity}, time difference: {object[i + 1].timestamp - object[i].timestamp}")
+                object[i].set_velocity(object_velocity)
 
         ### SAVE GTs
 
-        with (SCRIPT_PATH / 'reflectors.pkl').open('wb') as file:
-            pickle.dump(reflectors, file)
-        with (SCRIPT_PATH / 'persons.pkl').open('wb') as file:
-            pickle.dump(persons, file)
+        with (SCRIPT_PATH / 'objects.pkl').open('wb') as file:
+            pickle.dump(gt_objects, file)
         with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('wb') as file:
             pickle.dump(timestamp_to_index, file)
 
     ### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
 
-    reflector_errors = {
-        "Velocity Error": [],
-        "Absolute Component Wise Error": [],
-        "Velocity Angular Error": [],
-        "Radial Error": [],
-        "Tangential Error": [],
-        "Velocity Magnitude Error": [],
-    }
-    person_errors = {
-        "Velocity Error": [],
-        "Absolute Component Wise Error": [],
-        "Velocity Angular Error": [],
-        "Radial Error": [],
-        "Tangential Error": [],
-        "Velocity Magnitude Error": [],
-    }
+    errors = {}
 
     for i, key in enumerate(frame_map):
         pointcloud_filename = frame_map.get(key)
@@ -349,53 +329,45 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
                 mask = np.linalg.norm(point_cloud_data, axis=1) < 6
                 mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
-                if figure.parent_object.obj_class.name == "Person":
-                    gt_velocity = persons[timestamp_to_index[str(timestamp)]].velocity
 
-                    person_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
-                    person_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
-                    person_errors["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
-                    
-                    rad_v, tan_v = decompose_v(object_velocity, object_centroid)
-                    gt_rad_v, gt_tan_v = decompose_v(gt_velocity, persons[timestamp_to_index[str(timestamp)]].centroid)
-                    
-                    person_errors["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
-                    person_errors["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
-                    person_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
+                if figure.parent_object.obj_class.name not in errors:
+                    errors[figure.parent_object.obj_class.name] = {
+                        "Velocity Error": [],
+                        "Absolute Component Wise Error": [],
+                        "Velocity Angular Error": [],
+                        "Radial Error": [],
+                        "Tangential Error": [],
+                        "Velocity Magnitude Error": [],
+                    }
 
-                    # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                    # print(persons[timestamp_to_index[str(timestamp)]].centroid)
-                    # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
-                    print(f'Frame {i}: Person has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {person_errors["Velocity Error"][-1]}, Component Wise: {person_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{person_errors["Velocity Magnitude Error"][-1]}')
-                elif figure.parent_object.obj_class.name == "Reflector":
-                    gt_velocity = reflectors[timestamp_to_index[str(timestamp)]].velocity
+                object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
+                gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
 
-                    reflector_errors["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
-                    reflector_errors["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
-                    reflector_errors["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
-        
-                    rad_v, tan_v = decompose_v(object_velocity, object_centroid)
-                    gt_rad_v, gt_tan_v = decompose_v(gt_velocity, persons[timestamp_to_index[str(timestamp)]].centroid)
-                    
-                    reflector_errors["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
-                    reflector_errors["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
+                errors[object_type]["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+                errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+                errors[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
+                
+                rad_v, tan_v = decompose_v(object_velocity, object_centroid)
+                gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
+                
+                errors[object_type]["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
+                errors[object_type]["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
+                errors[object_type]["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
-                    reflector_errors["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
+                # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+                # print(persons[timestamp_to_index[str(timestamp)]].centroid)
+                # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
+                print(f'Frame {i}: {object_type} has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {errors[object_type]["Velocity Error"][-1]}, Component Wise: {errors[object_type]["Absolute Component Wise Error"][-1]}, Magnitude Error:{errors[object_type]["Velocity Magnitude Error"][-1]}')
 
-                    # visualize_points(reflectors[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
-                    # print(reflectors[timestamp_to_index[str(timestamp)]].centroid)
-                    # visualize_pointcloud_with_arrow(point_cloud_data[mask & mask2], position_vec, dimension_vec, rotation_vector, reflectors[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
-                    print(f'Frame {i}: Reflector has velocity {gt_velocity}, pred: {object_velocity}, Velocity error: {reflector_errors["Velocity Error"][-1]}, Component Wise: {reflector_errors["Absolute Component Wise Error"][-1]}, Magnitude Error:{reflector_errors["Velocity Magnitude Error"][-1]}')
-
-        if i >= len(reflectors) - 2: # Don't check the last frame because no gt velocity
+        if i >= len(gt_objects[next(iter(gt_objects))]) - 2: # Don't check the last frame because no gt velocity
             break
 
-    print(f'AVE Person: {np.mean(person_errors["Velocity Error"])} (std: {np.std(person_errors["Velocity Error"])}), AAE: {np.mean(person_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(person_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(person_errors["Velocity Magnitude Error"])))}')
-    print(f'AVE Reflector: {np.mean(reflector_errors["Velocity Error"])} (std: {np.std(reflector_errors["Velocity Error"])}),  AAE: {np.mean(reflector_errors["Absolute Component Wise Error"], axis=0)} (std: {np.std(reflector_errors["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(reflector_errors["Velocity Magnitude Error"])))}')
+    for object_type in errors: # Iterate over each object type (eg. person, reflector)
+        print(f'AVE {object_type}: {np.mean(errors[object_type]["Velocity Error"])} (std: {np.std(errors[object_type]["Velocity Error"])}), AAE: {np.mean(errors[object_type]["Absolute Component Wise Error"], axis=0)} (std: {np.std(errors[object_type]["Absolute Component Wise Error"], axis=0)}), Magnitude RMSE: {np.sqrt(np.mean(np.square(errors[object_type]["Velocity Magnitude Error"])))}')
 
     overall_errors = {}
-    for key in reflector_errors:
-        overall_errors[key] = np.concatenate((reflector_errors[key], person_errors[key]))
+    for key in errors[next(iter(errors))]: # Each object type has the same keys
+        overall_errors[key] = np.concatenate([errors[object_type][key] for object_type in errors])
 
     print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
         f' (std: {np.std(overall_errors["Velocity Error"])}),'
