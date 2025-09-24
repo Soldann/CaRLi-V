@@ -336,10 +336,17 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                         # "Absolute Component Wise Error": [],
                         "Velocity Angular Error": [],
                         "Weighted Velocity Angular Error": [],
-                        "Velocity Magnitudes": [], # This is used to compute the weighted velocity angular error (weighted by the gt velocity magnitude)
+                        "GT Velocity Magnitudes": [], # This is used to compute the weighted velocity angular error (weighted by the gt velocity magnitude)
+                        "Obj Velocity Magnitudes": [],
                         "Radial Error": [],
                         "Tangential Error": [],
                         "Velocity Magnitude Error": [],
+                        "GT Velocities": [],
+                        "Obj Velocities": [],
+                        "Radial Obj Velocities": [],
+                        "Radial GT Velocities": [],
+                        "Tangential Obj Velocities": [],
+                        "Tangential GT Velocities": [],
                     }
 
                 object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
@@ -349,7 +356,9 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 # errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
                 errors[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
                 errors[object_type]["Weighted Velocity Angular Error"].append(errors[object_type]["Velocity Angular Error"][-1] * np.linalg.norm(gt_velocity))
-                errors[object_type]["Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
+                errors[object_type]["GT Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
+                errors[object_type]["Obj Velocities"].append(object_velocity)
+                errors[object_type]["GT Velocities"].append(gt_velocity)
 
                 rad_v, tan_v = decompose_v(object_velocity, object_centroid)
                 gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
@@ -386,10 +395,24 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         # f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
         # f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
         f'Mean Angular Error: {np.mean(overall_errors["Velocity Angular Error"])}, ',
-        f'Weighted Mean Angular Error: {np.sum(overall_errors["Weighted Velocity Angular Error"]) / (np.sum(overall_errors["Velocity Magnitudes"]) + 1e-6)}, ',
+        f'Weighted Mean Angular Error: {np.sum(overall_errors["Weighted Velocity Angular Error"]) / (np.sum(overall_errors["GT Velocity Magnitudes"]) + 1e-6)}, ',
         f'Mean Radial Error: {np.mean(overall_errors["Radial Error"])}, ',
         f'Mean Tangential Error: {np.mean(overall_errors["Tangential Error"])}, ',
         f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
+    
+    # Create plots
+    # Speed Line Plot
+    for object_type in errors:
+        plt.figure(figsize=(10, 6))
+        plt.title(f'Speed over Time for {object_type}')
+        plt.plot(np.linalg.norm(np.array(errors[object_type]["Obj Velocities"]), axis=1), label=f'Predicted {object_type}')
+        plt.plot(np.linalg.norm(np.array(errors[object_type]["GT Velocities"]), axis=1), label=f'GT {object_type}', linestyle='--')
+        plt.xlabel('Frame Index')
+        plt.ylabel('Speed (m/s)')
+        plt.legend()
+        plt.show()
+
+    # 
 
 if __name__ == "__main__":
     # Read command line arguments
