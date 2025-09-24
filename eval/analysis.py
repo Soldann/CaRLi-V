@@ -158,116 +158,20 @@ class Object():
     def set_velocity(self, velocity):
         self.velocity = velocity
 
-def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
-    ### LOAD THE DATASET
+def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds):
+    """
+    Compute the GT and predicted velocities, and return a dictionary of values
+    :param frame_map: Supervisely generated mapping from frame index to pointcloud filename
+    :param R_lidar_2_left_cam: Rotation matrix from lidar to left camera frame
+    :param t_lidar_2_left_cam: Translation vector from lidar to left camera frame
+    :param ann: Supervisely PointcloudEpisodeAnnotation object containing all the annotations
+    :param timestamp_to_index: Dict[str, int] mapping from timestamp (as a string) to the frame index
+    :param gt_objects: Dict[str, List[Object]] mapping from object type to list of Object instances containing GT data
+    :param visualize_pointclouds: Whether to visualize the pointclouds at various steps
 
-    # Path to the downloaded annotation JSON file
-    annotation_path = DATASET_PATH / "scene_1" / "annotation.json"
-
-    # Path to the mapping file
-    mapping_file = DATASET_PATH / "scene_1" / "frame_pointcloud_map.json"
-
-    # Load the mapping
-    with mapping_file.open("r") as f:
-        frame_map = json.load(f)
-
-    # Load project metadata (assuming you have it downloaded as well)
-    project_meta_json_path = DATASET_PATH / "meta.json"
-    project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(str(project_meta_json_path)))
-
-    # Load annotation from JSON file
-    ann = sly.PointcloudEpisodeAnnotation.load_json_file(str(annotation_path), project_meta)
-
-    gt_objects : Dict[str, List[Object]] = {}
-    timestamp_to_index : Dict[str, int] = {}
-
-    # TRANSFORM FROM LIDAR FRAME TO LEFT_CAMERA_FRAME, WE NEED THIS TO MATCH OUR OUTPUT
-    R_lidar_2_left_cam = np.array(
-        [[-0.00261783, -0.94086826,  0.33876256],
-        [ 0.99994174, -0.00601038, -0.00896588],
-        [ 0.01047181,  0.33871935,  0.94082918]]
-    )
-    t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
-
-    if not force_recompute and (SCRIPT_PATH / 'objects.pkl').exists():
-        print("Precomputed GTs found, loading them...")
-        with (SCRIPT_PATH / 'objects.pkl').open('rb') as file:
-            gt_objects = pickle.load(file)
-        with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('rb') as file:
-            timestamp_to_index = pickle.load(file)
-    else:
-        print("No precomputed GTs found, computing them now...")
-        # RETRIEVE POINTCLOUDS FOR EACH OBJECT
-        for i, key in enumerate(frame_map):
-            dataset_frame_index = int(key)
-            print(f"Processing index {dataset_frame_index}")
-            frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
-            objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
-
-            pointcloud_filename = frame_map.get(key)
-
-            figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-            point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
-            point_cloud_data = point_cloud_points
-
-            timestamp = float(pointcloud_filename.removesuffix(".pcd"))
-
-            if len(figures_on_frame) != 2:
-                raise RuntimeError("Expected only two figures")
-
-            # Extract points associated with each object
-            for figure in figures_on_frame:
-                object_geometry = figure.geometry
-                position = object_geometry.position
-                dimensions = object_geometry.dimensions
-
-                rotation = object_geometry.rotation  # Extract rotation vector
-
-                # Convert to np arrays because it's easier
-                rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
-                dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
-                position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
-
-                object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
-                object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
-                if visualize_pointclouds:
-                    visualize_points(object_points, f'Pointcloud for {figure.parent_object.obj_class.name} in Frame {i}')
-                    visualize_pointcloud_with_bbox(np.concatenate((point_cloud_data, object_points)), position_vec, dimension_vec, rotation_vector, f'Bounding Box for {figure.parent_object.obj_class.name} in Full Pointcloud')
-
-                object_centroid = np.mean(object_points, axis=0)
-
-                object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
-
-                if object.name not in gt_objects:
-                    gt_objects[object.name] = [] # Initialize list if it is the first time we see this object type
-
-                gt_objects[object.name].append(object) # Hidden assumption we will only find one object of each type
-
-                print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
-
-            timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
-
-            if stop_after > 0 and i >= stop_after:
-                print(f"Stopping early after {stop_after} frames as requested")
-                break
-
-        ### COMPUTE VELOCITIES BETWEEN PCD PAIRS
-        for object_type in gt_objects: # Iterate over each object type (eg. person, reflector)
-            object = gt_objects[object_type]
-            for i in range(len(object) - 1):
-                object_velocity = (object[i + 1].centroid - object[i].centroid) / (object[i + 1].timestamp - object[i].timestamp)
-                print(f"Velocity at frame {i}: {object[0].name}: {object_velocity}, time difference: {object[i + 1].timestamp - object[i].timestamp}")
-                object[i].set_velocity(object_velocity)
-
-        ### SAVE GTs
-
-        with (SCRIPT_PATH / 'objects.pkl').open('wb') as file:
-            pickle.dump(gt_objects, file)
-        with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('wb') as file:
-            pickle.dump(timestamp_to_index, file)
-
-    ### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
-
+    :return errors: Dict[str, Dict[str, np.array]] Mapping from object type to a dictionary of metrics stored as np.arrays
+    """
+    
     errors = {}
 
     for i, key in enumerate(frame_map):
@@ -380,33 +284,158 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
         if i >= len(gt_objects[next(iter(gt_objects))]) - 2: # Don't check the last frame because no gt velocity
             break
+    
+    for object_type in errors:
+        for error in errors[object_type]:
+            errors[object_type][error] = np.array(errors[object_type][error])
 
-    for object_type in errors: # Iterate over each object type (eg. person, reflector)
-        print(f'AVE {object_type}: {np.mean(errors[object_type]["Velocity Error"])} (std: {np.std(errors[object_type]["Velocity Error"])}), '
+    return errors
+
+def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
+    ### LOAD THE DATASET
+
+    # Path to the downloaded annotation JSON file
+    annotation_path = DATASET_PATH / "scene_1" / "annotation.json"
+
+    # Path to the mapping file
+    mapping_file = DATASET_PATH / "scene_1" / "frame_pointcloud_map.json"
+
+    # Load the mapping
+    with mapping_file.open("r") as f:
+        frame_map = json.load(f)
+
+    # Load project metadata (assuming you have it downloaded as well)
+    project_meta_json_path = DATASET_PATH / "meta.json"
+    project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(str(project_meta_json_path)))
+
+    # Load annotation from JSON file
+    ann = sly.PointcloudEpisodeAnnotation.load_json_file(str(annotation_path), project_meta)
+
+    gt_objects : Dict[str, List[Object]] = {}
+    timestamp_to_index : Dict[str, int] = {}
+
+    # TRANSFORM FROM LIDAR FRAME TO LEFT_CAMERA_FRAME, WE NEED THIS TO MATCH OUR OUTPUT
+    R_lidar_2_left_cam = np.array(
+        [[-0.00261783, -0.94086826,  0.33876256],
+        [ 0.99994174, -0.00601038, -0.00896588],
+        [ 0.01047181,  0.33871935,  0.94082918]]
+    )
+    t_lidar_2_left_cam = np.array([ 0.0169, -0.049, 0.095 ])
+
+    if not force_recompute and (SCRIPT_PATH / 'objects.pkl').exists():
+        print("Precomputed GTs found, loading them...")
+        with (SCRIPT_PATH / 'objects.pkl').open('rb') as file:
+            gt_objects = pickle.load(file)
+        with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('rb') as file:
+            timestamp_to_index = pickle.load(file)
+    else:
+        print("No precomputed GTs found, computing them now...")
+        # RETRIEVE POINTCLOUDS FOR EACH OBJECT
+        for i, key in enumerate(frame_map):
+            dataset_frame_index = int(key)
+            print(f"Processing index {dataset_frame_index}")
+            frame_data = ann.frames.get(dataset_frame_index)  # Retrieve frame details
+            objects_on_frame = ann.get_objects_on_frame(dataset_frame_index)
+
+            pointcloud_filename = frame_map.get(key)
+
+            figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+            point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
+            point_cloud_data = point_cloud_points
+
+            timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+
+            if len(figures_on_frame) != 2:
+                raise RuntimeError("Expected only two figures")
+
+            # Extract points associated with each object
+            for figure in figures_on_frame:
+                object_geometry = figure.geometry
+                position = object_geometry.position
+                dimensions = object_geometry.dimensions
+
+                rotation = object_geometry.rotation  # Extract rotation vector
+
+                # Convert to np arrays because it's easier
+                rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
+                dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
+                position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+
+                object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
+                object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
+                if visualize_pointclouds:
+                    visualize_points(object_points, f'Pointcloud for {figure.parent_object.obj_class.name} in Frame {i}')
+                    visualize_pointcloud_with_bbox(np.concatenate((point_cloud_data, object_points)), position_vec, dimension_vec, rotation_vector, f'Bounding Box for {figure.parent_object.obj_class.name} in Full Pointcloud')
+
+                object_centroid = np.mean(object_points, axis=0)
+
+                object = Object(figure.parent_object.obj_class.name, object_centroid, timestamp, object_points)
+
+                if object.name not in gt_objects:
+                    gt_objects[object.name] = [] # Initialize list if it is the first time we see this object type
+
+                gt_objects[object.name].append(object) # Hidden assumption we will only find one object of each type
+
+                print(f"Object {figure.parent_object.obj_class.name} has {len(object_points)} points, with centroid {object_centroid}")
+
+            timestamp_to_index[str(timestamp)] = i # Hidden assumption we will only find one object of each type
+
+            if stop_after > 0 and i >= stop_after:
+                print(f"Stopping early after {stop_after} frames as requested")
+                break
+
+        ### COMPUTE VELOCITIES BETWEEN PCD PAIRS
+        for object_type in gt_objects: # Iterate over each object type (eg. person, reflector)
+            object = gt_objects[object_type]
+            for i in range(len(object) - 1):
+                object_velocity = (object[i + 1].centroid - object[i].centroid) / (object[i + 1].timestamp - object[i].timestamp)
+                print(f"Velocity at frame {i}: {object[0].name}: {object_velocity}, time difference: {object[i + 1].timestamp - object[i].timestamp}")
+                object[i].set_velocity(object_velocity)
+
+        ### SAVE GTs
+
+        with (SCRIPT_PATH / 'objects.pkl').open('wb') as file:
+            pickle.dump(gt_objects, file)
+        with (SCRIPT_PATH / 'timestamp_to_index.pkl').open('wb') as file:
+            pickle.dump(timestamp_to_index, file)
+
+    ### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
+
+    if not force_recompute and (SCRIPT_PATH / 'errors.pkl').exists():
+        print("Precomputed velocities found, loading them...")
+        with (SCRIPT_PATH / 'errors.pkl').open('rb') as file:
+            metrics = pickle.load(file)
+    else:
+        metrics = compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds)
+        with (SCRIPT_PATH / 'errors.pkl').open('wb') as file:
+            pickle.dump(metrics, file)
+
+    for object_type in metrics: # Iterate over each object type (eg. person, reflector)
+        print(f'AVE {object_type}: {np.mean(metrics[object_type]["Velocity Error"])} (std: {np.std(metrics[object_type]["Velocity Error"])}), '
             #   f'AAE: {np.mean(errors[object_type]["Absolute Component Wise Error"], axis=0)} (std: {np.std(errors[object_type]["Absolute Component Wise Error"], axis=0)}), '
-              f'Magnitude RMSE: {np.sqrt(np.mean(np.square(errors[object_type]["Velocity Magnitude Error"])))}')
+              f'Magnitude RMSE: {np.sqrt(np.mean(np.square(metrics[object_type]["Velocity Magnitude Error"])))}')
 
-    overall_errors = {}
-    for key in errors[next(iter(errors))]: # Each object type has the same keys
-        overall_errors[key] = np.concatenate([errors[object_type][key] for object_type in errors])
+    overall_metrics = {}
+    for key in metrics[next(iter(metrics))]: # Each object type has the same keys
+        overall_metrics[key] = np.concatenate([metrics[object_type][key] for object_type in metrics])
 
-    print(f'AVE Overall: {np.mean(overall_errors["Velocity Error"])} '
-        f' (std: {np.std(overall_errors["Velocity Error"])}), '
+    print(f'AVE Overall: {np.mean(overall_metrics["Velocity Error"])} '
+        f' (std: {np.std(overall_metrics["Velocity Error"])}), '
         # f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
         # f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
-        f'Mean Angular Error: {np.mean(overall_errors["Velocity Angular Error"])}, ',
-        f'Weighted Mean Angular Error: {np.sum(overall_errors["Weighted Velocity Angular Error"]) / (np.sum(overall_errors["GT Velocity Magnitudes"]) + 1e-6)}, ',
-        f'Mean Radial Error: {np.mean(overall_errors["Radial Error"])}, ',
-        f'Mean Tangential Error: {np.mean(overall_errors["Tangential Error"])}, ',
-        f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_errors["Velocity Magnitude Error"])))}')
+        f'Mean Angular Error: {np.mean(overall_metrics["Velocity Angular Error"])}, ',
+        f'Weighted Mean Angular Error: {np.sum(overall_metrics["Weighted Velocity Angular Error"]) / (np.sum(overall_metrics["GT Velocity Magnitudes"]) + 1e-6)}, ',
+        f'Mean Radial Error: {np.mean(overall_metrics["Radial Error"])}, ',
+        f'Mean Tangential Error: {np.mean(overall_metrics["Tangential Error"])}, ',
+        f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_metrics["Velocity Magnitude Error"])))}')
     
     # Create plots
     # Speed Line Plot
-    for object_type in errors:
+    for object_type in metrics:
         plt.figure(figsize=(10, 6))
         plt.title(f'Speed over Time for {object_type}')
-        plt.plot(np.linalg.norm(np.array(errors[object_type]["Obj Velocities"]), axis=1), label=f'Predicted {object_type}')
-        plt.plot(np.linalg.norm(np.array(errors[object_type]["GT Velocities"]), axis=1), label=f'GT {object_type}', linestyle='--')
+        plt.plot(np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), label=f'Predicted {object_type}')
+        plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
         plt.ylabel('Speed (m/s)')
         plt.legend()
