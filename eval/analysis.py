@@ -6,6 +6,8 @@ import cv2
 from typing import List, Dict
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
+from matplotlib.collections import LineCollection
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import open3d as o3d
 from pathlib import Path
 import pickle
@@ -440,6 +442,51 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.xlabel('Frame Index')
         plt.ylabel('Speed (m/s)')
         plt.legend()
+        plt.show()
+
+    # 2D Plot of Velocities
+    for object_type in metrics:
+        fig = plt.figure(figsize=(10, 10))
+        ax = fig.add_subplot(111)
+
+        obj_velocities = metrics[object_type]["Obj Velocities"][:,:2].reshape(-1, 1, 2)[:,:,::-1] # Swap x and y so radial direction points up
+        obj_line_segments = LineCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="Predicted Velocities")
+        obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
+        ax.add_collection(obj_line_segments)
+
+        gt_velocities = metrics[object_type]["GT Velocities"][:,:2].reshape(-1, 1, 2)[:,:,::-1] # Swap x and y so radial direction points up
+        obj_line_segments = LineCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="GT Velocities", linestyle='--')
+        obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
+        ax.add_collection(obj_line_segments)
+
+        # Create a divider and append colorbar axis
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.2) 
+        cbar = plt.colorbar(obj_line_segments, cax=cax, pad=0.1)
+        cbar.set_label('Velocity Error')
+
+        # Move spines to center
+        ax.spines['left'].set_position('zero')
+        ax.spines['bottom'].set_position('zero')
+
+        # Hide top and right spines
+        ax.spines['top'].set_color('none')
+        ax.spines['right'].set_color('none')
+
+        # Set ticks only on bottom and left
+        ax.xaxis.set_ticks_position('bottom')
+        ax.yaxis.set_ticks_position('left')
+
+        # Optional: grid and limits
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.set_xlim(-2, 2)
+        ax.set_ylim(-2, 2)
+        ax.xaxis.set_label_coords(1.02, -0.02)  # Right end of x-axis
+        ax.yaxis.set_label_coords(-0.02, 1.02)  # Top end of y-axis
+
+        ax.set_ylabel("Tangential Velocity") # The Tangential Velocity is the y label because it is next to the horizontal axis
+        ax.set_xlabel("Radial Velocity") # The Radial Velocity is the x label because it is next to the vertical axis
+        ax.set_title(f'2D Velocity Vectors for {object_type}')
         plt.show()
 
     # 3D Plot of Velocities with error colouring
