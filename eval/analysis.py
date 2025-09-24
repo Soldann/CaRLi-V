@@ -459,6 +459,20 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         obj_line_segments.set_array(time[:-1])  # One color per segment
         ax.add_collection(obj_line_segments)
 
+        # Add colorbar
+        cbar = plt.colorbar(obj_line_segments, ax=ax, pad=0.1)
+        cbar.set_label('Time')
+
+        # Simulate centered axes by drawing lines through origin
+        axis_length = 2
+        ax.quiver(-axis_length, 0, 0, 2*axis_length, 0, 0, color='black', arrow_length_ratio=0.05) # X-axis
+        ax.quiver(0, -axis_length, 0, 0, 2*axis_length, 0, color='black', arrow_length_ratio=0.05) # Y-axis
+        ax.quiver(0, 0, -axis_length, 0, 0, 2*axis_length, color='black', arrow_length_ratio=0.05) # Z-axis
+
+        ax.set_xlim([-axis_length, axis_length])
+        ax.set_ylim([-axis_length, axis_length])
+        ax.set_zlim([-axis_length, axis_length])
+
         ax.set_xlabel("Vx"), ax.set_ylabel("Vy"), ax.set_zlabel("Vz")
         ax.set_title(f'3D Velocity Vectors for {object_type}')
         ax.legend()
