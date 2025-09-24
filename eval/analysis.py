@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import cv2
 from typing import List, Dict
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 import open3d as o3d
 from pathlib import Path
 import pickle
@@ -441,7 +442,28 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.legend()
         plt.show()
 
-    # 
+    # 3D Plot of Velocities with colour as time
+    for object_type in metrics:
+        fig = plt.figure(figsize=(10, 7))
+        ax = fig.add_subplot(111, projection='3d')
+        num_points = metrics[object_type]["Obj Velocities"].shape[0]
+        time = np.linspace(0, 1, num_points)  # Time from 0 to 1
+
+        obj_velocities = metrics[object_type]["Obj Velocities"].reshape(-1, 1, 3)
+        obj_line_segments = Line3DCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="Predicted Velocities")
+        obj_line_segments.set_array(time[:-1])  # One color per segment
+        ax.add_collection(obj_line_segments)
+
+        gt_velocities = metrics[object_type]["GT Velocities"].reshape(-1, 1, 3)
+        obj_line_segments = Line3DCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="GT Velocities", linestyle='--')
+        obj_line_segments.set_array(time[:-1])  # One color per segment
+        ax.add_collection(obj_line_segments)
+
+        ax.set_xlabel("Vx"), ax.set_ylabel("Vy"), ax.set_zlabel("Vz")
+        ax.set_title(f'3D Velocity Vectors for {object_type}')
+        ax.legend()
+        plt.show()
+
 
 if __name__ == "__main__":
     # Read command line arguments
