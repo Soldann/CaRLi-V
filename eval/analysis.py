@@ -442,26 +442,24 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.legend()
         plt.show()
 
-    # 3D Plot of Velocities with colour as time
+    # 3D Plot of Velocities with error colouring
     for object_type in metrics:
         fig = plt.figure(figsize=(10, 7))
         ax = fig.add_subplot(111, projection='3d')
         num_points = metrics[object_type]["Obj Velocities"].shape[0]
-        time = np.linspace(0, 1, num_points)  # Time from 0 to 1
 
         obj_velocities = metrics[object_type]["Obj Velocities"].reshape(-1, 1, 3)
         obj_line_segments = Line3DCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="Predicted Velocities")
-        obj_line_segments.set_array(time[:-1])  # One color per segment
+        obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
         gt_velocities = metrics[object_type]["GT Velocities"].reshape(-1, 1, 3)
         obj_line_segments = Line3DCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="GT Velocities", linestyle='--')
-        obj_line_segments.set_array(time[:-1])  # One color per segment
+        obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
-        # Add colorbar
         cbar = plt.colorbar(obj_line_segments, ax=ax, pad=0.1)
-        cbar.set_label('Time')
+        cbar.set_label('Velocity Error')
 
         # Simulate centered axes by drawing lines through origin
         axis_length = 2
