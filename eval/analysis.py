@@ -169,10 +169,10 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
     :param gt_objects: Dict[str, List[Object]] mapping from object type to list of Object instances containing GT data
     :param visualize_pointclouds: Whether to visualize the pointclouds at various steps
 
-    :return errors: Dict[str, Dict[str, np.array]] Mapping from object type to a dictionary of metrics stored as np.arrays
+    :return metrics: Dict[str, Dict[str, np.array]] Mapping from object type to a dictionary of metrics stored as np.arrays
     """
     
-    errors = {}
+    metrics = {}
 
     for i, key in enumerate(frame_map):
         pointcloud_filename = frame_map.get(key)
@@ -234,8 +234,8 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                 mask = np.linalg.norm(point_cloud_data, axis=1) < 6
                 mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
 
-                if figure.parent_object.obj_class.name not in errors:
-                    errors[figure.parent_object.obj_class.name] = {
+                if figure.parent_object.obj_class.name not in metrics:
+                    metrics[figure.parent_object.obj_class.name] = {
                         "Velocity Error": [],
                         # "Absolute Component Wise Error": [],
                         "Velocity Angular Error": [],
@@ -256,40 +256,40 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                 object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
                 gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
 
-                errors[object_type]["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+                metrics[object_type]["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
                 # errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
-                errors[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
-                errors[object_type]["Weighted Velocity Angular Error"].append(errors[object_type]["Velocity Angular Error"][-1] * np.linalg.norm(gt_velocity))
-                errors[object_type]["GT Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
-                errors[object_type]["Obj Velocities"].append(object_velocity)
-                errors[object_type]["GT Velocities"].append(gt_velocity)
+                metrics[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
+                metrics[object_type]["Weighted Velocity Angular Error"].append(metrics[object_type]["Velocity Angular Error"][-1] * np.linalg.norm(gt_velocity))
+                metrics[object_type]["GT Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
+                metrics[object_type]["Obj Velocities"].append(object_velocity)
+                metrics[object_type]["GT Velocities"].append(gt_velocity)
 
                 rad_v, tan_v = decompose_v(object_velocity, object_centroid)
                 gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
                 
-                errors[object_type]["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
-                errors[object_type]["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
-                errors[object_type]["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
+                metrics[object_type]["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
+                metrics[object_type]["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
+                metrics[object_type]["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
 
                 # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
                 # print(persons[timestamp_to_index[str(timestamp)]].centroid)
                 # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
                 print(f'Frame {i}: {object_type} has velocity {gt_velocity}, pred: {object_velocity},'
-                      f'Velocity error: {errors[object_type]["Velocity Error"][-1]},'
+                      f'Velocity error: {metrics[object_type]["Velocity Error"][-1]},'
                     #   f'Component Wise: {errors[object_type]["Absolute Component Wise Error"][-1]},'
-                      f'Angular Error: {errors[object_type]["Velocity Angular Error"][-1]}',
-                      f'Radial Error: {errors[object_type]["Radial Error"][-1]}',
-                      f'Tangential Error: {errors[object_type]["Tangential Error"][-1]}',
-                      f'Magnitude Error:{errors[object_type]["Velocity Magnitude Error"][-1]}')
+                      f'Angular Error: {metrics[object_type]["Velocity Angular Error"][-1]}',
+                      f'Radial Error: {metrics[object_type]["Radial Error"][-1]}',
+                      f'Tangential Error: {metrics[object_type]["Tangential Error"][-1]}',
+                      f'Magnitude Error:{metrics[object_type]["Velocity Magnitude Error"][-1]}')
 
         if i >= len(gt_objects[next(iter(gt_objects))]) - 2: # Don't check the last frame because no gt velocity
             break
     
-    for object_type in errors:
-        for error in errors[object_type]:
-            errors[object_type][error] = np.array(errors[object_type][error])
+    for object_type in metrics:
+        for metric in metrics[object_type]:
+            metrics[object_type][metric] = np.array(metrics[object_type][metric])
 
-    return errors
+    return metrics
 
 def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     ### LOAD THE DATASET
