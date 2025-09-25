@@ -503,6 +503,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 return obj_line_segments, gt_line_segments
 
         ani = FuncAnimation(fig, update_2d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
+        # ani.save(f"2d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
         plt.show()
 
     # 3D Plot of Velocities with error colouring
@@ -552,6 +553,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 return obj_line_segments, gt_line_segments
 
         ani = FuncAnimation(fig, update_3d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
+        # ani.save(f"3d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
         plt.show()
 
 
