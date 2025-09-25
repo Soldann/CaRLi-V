@@ -7,6 +7,7 @@ from typing import List, Dict
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from matplotlib.collections import LineCollection
+from matplotlib.animation import FuncAnimation
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import open3d as o3d
 from pathlib import Path
@@ -492,6 +493,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.show()
 
     # 3D Plot of Velocities with error colouring
+    frames_to_keep_in_animation=3
     for object_type in metrics:
         fig = plt.figure(figsize=(10, 7))
         ax = fig.add_subplot(111, projection='3d')
@@ -500,20 +502,22 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         colour_norm = plt.Normalize(np.min(metrics[object_type]["Velocity Error"]), np.max(metrics[object_type]["Velocity Error"]))
 
         obj_velocities = metrics[object_type]["Obj Velocities"].reshape(-1, 1, 3)
-        obj_line_segments = Line3DCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=colour_norm, label="Predicted Velocities")
+        obj_velocity_segments = np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1)
+        obj_line_segments = Line3DCollection(obj_velocity_segments[:frames_to_keep_in_animation], cmap='viridis', norm=colour_norm, label="Predicted Velocities")
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
         gt_velocities = metrics[object_type]["GT Velocities"].reshape(-1, 1, 3)
-        obj_line_segments = Line3DCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=colour_norm, label="GT Velocities", linestyle='--')
-        obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
-        ax.add_collection(obj_line_segments)
+        gt_velocity_segments = np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1)
+        gt_line_segments = Line3DCollection(gt_velocity_segments[:frames_to_keep_in_animation], cmap='viridis', norm=colour_norm, label="GT Velocities", linestyle='--')
+        gt_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
+        ax.add_collection(gt_line_segments)
 
         cbar = plt.colorbar(obj_line_segments, ax=ax, pad=0.1)
         cbar.set_label('Velocity Error')
 
         # Simulate centered axes by drawing lines through origin
-        axis_length = 2
+        axis_length = np.max(metrics[object_type]["GT Velocity Magnitudes"])*1.1
         ax.quiver(-axis_length, 0, 0, 2*axis_length, 0, 0, color='black', arrow_length_ratio=0.05) # X-axis
         ax.quiver(0, -axis_length, 0, 0, 2*axis_length, 0, color='black', arrow_length_ratio=0.05) # Y-axis
         ax.quiver(0, 0, -axis_length, 0, 0, 2*axis_length, color='black', arrow_length_ratio=0.05) # Z-axis
@@ -525,6 +529,16 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         ax.set_xlabel("Vx"), ax.set_ylabel("Vy"), ax.set_zlabel("Vz")
         ax.set_title(f'3D Velocity Vectors for {object_type}')
         ax.legend()
+
+        def update_3d_velocity_plot(frame):
+                obj_line_segments.set_segments(obj_velocity_segments[frame:frame+frames_to_keep_in_animation])
+                gt_line_segments.set_segments(gt_velocity_segments[frame:frame+frames_to_keep_in_animation])
+                obj_line_segments.set_array(metrics[object_type]["Velocity Error"][frame:frame+frames_to_keep_in_animation])
+                gt_line_segments.set_array(metrics[object_type]["Velocity Error"][frame:frame+frames_to_keep_in_animation])
+                ax.set_title(f'3D Velocity Vectors for {object_type}, frames {frame}-{frame+frames_to_keep_in_animation}')
+                return obj_line_segments, gt_line_segments
+
+        ani = FuncAnimation(fig, update_3d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
         plt.show()
 
 
