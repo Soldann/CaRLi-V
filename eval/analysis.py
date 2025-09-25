@@ -449,13 +449,15 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111)
 
+        colour_norm = plt.Normalize(np.min(metrics[object_type]["Velocity Error"]), np.max(metrics[object_type]["Velocity Error"]))
+
         obj_velocities = metrics[object_type]["Obj Velocities"][:,:2].reshape(-1, 1, 2)[:,:,::-1] # Swap x and y so radial direction points up
-        obj_line_segments = LineCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="Predicted Velocities")
+        obj_line_segments = LineCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=colour_norm, label="Predicted Velocities")
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
         gt_velocities = metrics[object_type]["GT Velocities"][:,:2].reshape(-1, 1, 2)[:,:,::-1] # Swap x and y so radial direction points up
-        obj_line_segments = LineCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="GT Velocities", linestyle='--')
+        obj_line_segments = LineCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=colour_norm, label="GT Velocities", linestyle='--')
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
@@ -495,13 +497,15 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         ax = fig.add_subplot(111, projection='3d')
         num_points = metrics[object_type]["Obj Velocities"].shape[0]
 
+        colour_norm = plt.Normalize(np.min(metrics[object_type]["Velocity Error"]), np.max(metrics[object_type]["Velocity Error"]))
+
         obj_velocities = metrics[object_type]["Obj Velocities"].reshape(-1, 1, 3)
-        obj_line_segments = Line3DCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="Predicted Velocities")
+        obj_line_segments = Line3DCollection(np.concatenate([obj_velocities[:-1], obj_velocities[1:]], axis=1), cmap='viridis', norm=colour_norm, label="Predicted Velocities")
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
         gt_velocities = metrics[object_type]["GT Velocities"].reshape(-1, 1, 3)
-        obj_line_segments = Line3DCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=plt.Normalize(0, 1), label="GT Velocities", linestyle='--')
+        obj_line_segments = Line3DCollection(np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1), cmap='viridis', norm=colour_norm, label="GT Velocities", linestyle='--')
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
