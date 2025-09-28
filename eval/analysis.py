@@ -177,6 +177,7 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
     """
     
     metrics = {}
+    frame_counter = 0
 
     for i, key in enumerate(frame_map):
         pointcloud_filename = frame_map.get(key)
@@ -200,6 +201,7 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
 
             transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -R_lidar_2_left_cam.T @ t_lidar_2_left_cam)
 
+            frame_counter += 1
             for figure in figures_on_frame:
                 object_geometry = figure.geometry
                 position = object_geometry.position
@@ -255,11 +257,13 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                         "Radial GT Velocities": [],
                         "Tangential Obj Velocities": [],
                         "Tangential GT Velocities": [],
+                        "Frame ID": [],
                     }
 
                 object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
                 gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
 
+                metrics[object_type]["Frame ID"].append(frame_counter)
                 metrics[object_type]["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
                 # errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
                 metrics[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
@@ -298,6 +302,27 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
             metrics[object_type][metric] = np.array(metrics[object_type][metric])
 
     return metrics
+
+def break_gaps_with_nan(x_data, y_data, threshold):
+    """This function inserts NaN between values where the X jumps beyond the threshold provided, so that Matplotlib splits the plotted data into two line segments without connecting them"""
+    # Compute gaps
+    gaps = np.diff(x_data) > threshold
+
+    # Total number of breaks
+    n_breaks = np.count_nonzero(gaps)
+
+    # Preallocate new arrays with space for NaNs
+    x_new = np.empty(len(x_data) + n_breaks)
+    y_new = np.empty(len(y_data) + n_breaks)
+
+    # Fill in values with NaNs at break points
+    insert_indices = np.where(gaps)[0] + np.arange(1, n_breaks + 1)
+
+    x_new[:] = np.nan
+    y_new[:] = np.nan
+    x_new[np.setdiff1d(np.arange(len(x_new)), insert_indices)] = x_data
+    y_new[np.setdiff1d(np.arange(len(y_new)), insert_indices)] = y_data
+    return x_new, y_new
 
 def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     ### LOAD THE DATASET
@@ -438,38 +463,47 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_metrics["Velocity Magnitude Error"])))}')
     
     # Create plots
+    object_type_to_plot_colour = {
+        "Person": "tab:blue",
+        "Reflector": "tab:orange",
+    }
+
+    print(metrics["Reflector"]["Frame ID"])
+    print(*break_gaps_with_nan(metrics["Reflector"]["Frame ID"], np.linalg.norm(metrics["Reflector"]["Obj Velocities"], axis=1), 2))
+
     # Speed Line Plot
+    plt.figure(figsize=(10, 6))
+    plt.title(f'Speed over Time')
     for object_type in metrics:
-        plt.figure(figsize=(10, 6))
-        plt.title(f'Speed over Time for {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), label=f'Predicted {object_type}', color='tab:blue')
-        plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--', color='tab:blue')
-        plt.xlabel('Frame Index')
-        plt.ylabel('Speed (m/s)')
-        plt.legend()
-        plt.show()
+        print(len(metrics[object_type]["Obj Velocities"]), object_type)
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), 2), label=f'Predicted {object_type}', color=object_type_to_plot_colour[object_type])
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), 2), label=f'GT {object_type}', linestyle='--', color=object_type_to_plot_colour[object_type])
+    plt.xlabel('Frame Index')
+    plt.ylabel('Speed (m/s)')
+    plt.legend()
+    plt.show()
 
     # Radial Velocity Speed Plot
+    plt.figure(figsize=(10, 6))
+    plt.title(f'Radial Speed over Time')
     for object_type in metrics:
-        plt.figure(figsize=(10, 6))
-        plt.title(f'Radial Speed over Time for {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), label=f'Predicted {object_type}', color='tab:blue')
-        plt.plot(np.linalg.norm(metrics[object_type]["Radial Velocities"], axis=1), label=f'GT {object_type}', linestyle='--', color='tab:blue')
-        plt.xlabel('Frame Index')
-        plt.ylabel('Radial Speed (m/s)')
-        plt.legend()
-        plt.show()
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), 2), label=f'Predicted {object_type}', color=object_type_to_plot_colour[object_type])
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), 2), label=f'GT {object_type}', linestyle='--', color=object_type_to_plot_colour[object_type])
+    plt.xlabel('Frame Index')
+    plt.ylabel('Radial Speed (m/s)')
+    plt.legend()
+    plt.show()
 
     # Tangential Velocity Speed Plot
+    plt.figure(figsize=(10, 6))
+    plt.title(f'Tangential Speed over Time')
     for object_type in metrics:
-        plt.figure(figsize=(10, 6))
-        plt.title(f'Tangential Speed over Time for {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), label=f'Predicted {object_type}', color='tab:blue')
-        plt.plot(np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--', color='tab:blue')
-        plt.xlabel('Frame Index')
-        plt.ylabel('Tangential Speed (m/s)')
-        plt.legend()
-        plt.show()
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), 2), label=f'Predicted {object_type}', color=object_type_to_plot_colour[object_type])
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), 2), label=f'GT {object_type}', linestyle='--', color=object_type_to_plot_colour[object_type])
+    plt.xlabel('Frame Index')
+    plt.ylabel('Tangential Speed (m/s)')
+    plt.legend()
+    plt.show()
 
     # 2D Plot of Velocities
     frames_to_keep_in_animation=3
