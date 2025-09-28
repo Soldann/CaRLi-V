@@ -5,6 +5,8 @@ build/
 log/
 eval/persons.pkl
 eval/reflectors.pkl
+eval/errors.pkl
+eval/objects.pkl
 eval/timestamp_to_index.pkl
 datasets/
 my_venv/

@@ -271,6 +271,10 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                 rad_v, tan_v = decompose_v(object_velocity, object_centroid)
                 gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
                 
+                metrics[object_type]["Radial Obj Velocities"].append(rad_v)
+                metrics[object_type]["Radial GT Velocities"].append(gt_rad_v)
+                metrics[object_type]["Tangential Obj Velocities"].append(tan_v)
+                metrics[object_type]["Tangential GT Velocities"].append(gt_tan_v)
                 metrics[object_type]["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
                 metrics[object_type]["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
                 metrics[object_type]["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
@@ -438,10 +442,32 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     for object_type in metrics:
         plt.figure(figsize=(10, 6))
         plt.title(f'Speed over Time for {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), label=f'Predicted {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
+        plt.plot(np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), label=f'Predicted {object_type}', color='tab:blue')
+        plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--', color='tab:blue')
         plt.xlabel('Frame Index')
         plt.ylabel('Speed (m/s)')
+        plt.legend()
+        plt.show()
+
+    # Radial Velocity Speed Plot
+    for object_type in metrics:
+        plt.figure(figsize=(10, 6))
+        plt.title(f'Radial Speed over Time for {object_type}')
+        plt.plot(np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), label=f'Predicted {object_type}', color='tab:blue')
+        plt.plot(np.linalg.norm(metrics[object_type]["Radial Velocities"], axis=1), label=f'GT {object_type}', linestyle='--', color='tab:blue')
+        plt.xlabel('Frame Index')
+        plt.ylabel('Radial Speed (m/s)')
+        plt.legend()
+        plt.show()
+
+    # Tangential Velocity Speed Plot
+    for object_type in metrics:
+        plt.figure(figsize=(10, 6))
+        plt.title(f'Tangential Speed over Time for {object_type}')
+        plt.plot(np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), label=f'Predicted {object_type}', color='tab:blue')
+        plt.plot(np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--', color='tab:blue')
+        plt.xlabel('Frame Index')
+        plt.ylabel('Tangential Speed (m/s)')
         plt.legend()
         plt.show()
 
@@ -494,6 +520,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         ax.set_xlabel("Radial Velocity (m/s)") # The Radial Velocity is the x label because it is next to the vertical axis
         ax.set_title(f'2D Velocity Vectors for {object_type}')
 
+        plt.legend()
         def update_2d_velocity_plot(frame):
                 obj_line_segments.set_segments(obj_velocity_segments[frame:frame+frames_to_keep_in_animation])
                 gt_line_segments.set_segments(gt_velocity_segments[frame:frame+frames_to_keep_in_animation])
@@ -553,6 +580,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 return obj_line_segments, gt_line_segments
 
         ani = FuncAnimation(fig, update_3d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
+        plt.legend()
         # ani.save(f"3d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
         plt.show()
 

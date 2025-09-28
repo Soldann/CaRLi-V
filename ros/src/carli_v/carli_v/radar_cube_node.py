@@ -448,7 +448,7 @@ class RadarProcessor(Node):
                 arrow.color.b = 0.0
             arrow.color.a = 1.0
 
-            arrow.lifetime = rclpy.duration.Duration(seconds=0.5).to_msg()  # Lifetime of the marker
+            arrow.lifetime = rclpy.duration.Duration(seconds=7).to_msg()  # Lifetime of the marker
             marker_array.markers.append(arrow)
         self.marker_publisher.publish(marker_array)
 
