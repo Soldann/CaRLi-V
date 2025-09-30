@@ -482,41 +482,89 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
             ax.axvspan(x_start, x_end, color='grey', alpha=0.3, zorder=0)
 
     gap_threshold = 2 # Define a threshold for gaps in frame indices
-    # Speed Line Plot
-    for object_type in metrics:
-        plt.figure(figsize=(10, 6))
-        plt.title(f'Speed over Time for {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
-        plt.xlabel('Frame Index')
-        plt.ylabel('Speed (m/s)')
-        _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
-        plt.legend()
-        plt.show()
+    # # Speed Line Plot
+    # for object_type in metrics:
+    #     plt.figure(figsize=(10, 6))
+    #     plt.title(f'Speed over Time for {object_type}')
+    #     plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
+    #     plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
+    #     plt.xlabel('Frame Index')
+    #     plt.ylabel('Speed (m/s)')
+    #     _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
+    #     plt.legend()
+    #     plt.show()
 
-    # Radial Velocity Speed Plot
-    for object_type in metrics:
-        plt.figure(figsize=(10, 6))
-        plt.title(f'Radial Speed over Time for {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
-        plt.xlabel('Frame Index')
-        plt.ylabel('Radial Speed (m/s)')
-        _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
-        plt.legend()
-        plt.show()
+    # # Radial Velocity Speed Plot
+    # for object_type in metrics:
+    #     plt.figure(figsize=(10, 6))
+    #     plt.title(f'Radial Speed over Time for {object_type}')
+    #     plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
+    #     plt.plot(np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
+    #     plt.xlabel('Frame Index')
+    #     plt.ylabel('Radial Speed (m/s)')
+    #     _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
+    #     plt.legend()
+    #     plt.show()
 
-    # Tangential Velocity Speed Plot
-    for object_type in metrics:
-        plt.figure(figsize=(10, 6))
-        plt.title(f'Tangential Speed over Time for {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
-        plt.plot(np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
-        plt.xlabel('Frame Index')
-        _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
-        plt.ylabel('Tangential Speed (m/s)')
-        plt.legend()
-        plt.show()
+    # # Tangential Velocity Speed Plot
+    # for object_type in metrics:
+    #     plt.figure(figsize=(10, 6))
+    #     plt.title(f'Tangential Speed over Time for {object_type}')
+    #     plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
+    #     plt.plot(np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
+    #     plt.xlabel('Frame Index')
+    #     _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
+    #     plt.ylabel('Tangential Speed (m/s)')
+    #     plt.legend()
+    #     plt.show()
+
+    # Combined Speed, Radial and Tangential Velocity Speed Plots
+    num_obj_types = len(metrics)
+    fig, axes = plt.subplots(3, 2, figsize=(10, 6), sharex=True, sharey=True)
+    fig.suptitle(f'Speeds over Time', fontsize=16)
+    for i, object_type in enumerate(metrics):
+        if metrics[object_type]["Frame ID"].size == 0:
+            continue
+
+        # Predicted & GT overall speed
+        pred_speed = np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1)
+        gt_speed = np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1)
+        x_pred, y_pred = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_speed, gap_threshold)
+        axes[0,i].plot(x_pred, y_pred, label=f'Predicted {object_type}')
+        axes[0,i].plot(gt_speed, label=f'GT {object_type}', linestyle='--')
+        axes[0,i].set_title(f'{object_type} Speeds')
+        if i == 0:
+            axes[0,i].set_ylabel('Speed (m/s)')
+        if i == num_obj_types - 1:
+            axes[0,i].legend() # only add a legend on the top right plot
+        _shade_gaps(axes[0,i], metrics[object_type]["Frame ID"], gap_threshold)
+        axes[0,i].grid(True, linestyle='--', alpha=0.5)
+
+        # Radial speed
+        pred_radial = np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1)
+        gt_radial = np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1)
+        x_pred_r, y_pred_r = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_radial, gap_threshold)
+        axes[1,i].plot(x_pred_r, y_pred_r, label=f'Predicted {object_type}')
+        axes[1,i].plot(gt_radial, label=f'GT {object_type}', linestyle='--')
+        if i == 0:
+            axes[1,i].set_ylabel('Radial Speed (m/s)')
+        _shade_gaps(axes[1,i], metrics[object_type]["Frame ID"], gap_threshold)
+        axes[1,i].grid(True, linestyle='--', alpha=0.5)
+
+        # Tangential speed
+        pred_tan = np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1)
+        gt_tan = np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1)
+        x_pred_t, y_pred_t = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_tan, gap_threshold)
+        axes[2,i].plot(x_pred_t, y_pred_t, label=f'Predicted {object_type}')
+        axes[2,i].plot(gt_tan, label=f'GT {object_type}', linestyle='--')
+        if i == 0:
+            axes[2,i].set_ylabel('Tangential Speed (m/s)')
+        axes[2,i].set_xlabel('Frame Index')
+        _shade_gaps(axes[2,i], metrics[object_type]["Frame ID"], gap_threshold)
+        axes[2,i].grid(True, linestyle='--', alpha=0.5)
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    plt.show()
 
     # 2D Plot of Velocities
     frames_to_keep_in_animation=3
