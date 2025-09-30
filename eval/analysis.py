@@ -520,10 +520,26 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
     # Combined Speed, Radial and Tangential Velocity Speed Plots
     num_obj_types = len(metrics)
-    fig, axes = plt.subplots(2, 3, figsize=(12, 4), sharex=True, sharey=True)
+    # Increase global font size by 2
+    current_font = plt.rcParams.get('font.size', 10)
+    new_font = current_font + 2
+    plt.rcParams.update({'font.size': new_font})
+
+    fig, axes = plt.subplots(2, 3, figsize=(12, 4.5), sharex=True, sharey=True)
     for i, object_type in enumerate(metrics):
         if metrics[object_type]["Frame ID"].size == 0:
             continue
+
+        # place a bold object_type textbox on the left-most subplot for this row
+        def _place_obj_label(ax):
+            ax.text(
+                0.02, 0.95, object_type,
+                transform=ax.transAxes,
+                fontsize=new_font,
+                fontweight='bold',
+                va='top',
+                bbox=dict(facecolor='white', alpha=0.8, boxstyle='round')
+            )
 
         # Predicted & GT overall speed
         pred_speed = np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1)
@@ -531,13 +547,15 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         x_pred, y_pred = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_speed, gap_threshold)
         axes[i,0].plot(x_pred, y_pred, label=f'Predicted {object_type}')
         axes[i,0].plot(gt_speed, label=f'GT {object_type}', linestyle='--')
-        axes[i,0].set_ylabel(object_type)
+        axes[i,0].set_ylabel("Speed (m/s)", fontsize=new_font)
+        _place_obj_label(axes[i,0])
         if i == 0:
-            axes[i,0].set_title(f'Overall Speeds (m/s)')
+            axes[i,0].set_title(f'Overall Speeds', fontsize=new_font)
         if i == num_obj_types - 1:
-            axes[i,0].set_xlabel('Frame Index')
+            axes[i,0].set_xlabel('Frame Index', fontsize=new_font)
         _shade_gaps(axes[i,0], metrics[object_type]["Frame ID"], gap_threshold)
         axes[i,0].grid(True, linestyle='--', alpha=0.5)
+        # axes[i,0].tick_params(axis='both', labelsize=new_font)
 
         # Radial speed
         pred_radial = np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1)
@@ -545,12 +563,15 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         x_pred_r, y_pred_r = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_radial, gap_threshold)
         axes[i,1].plot(x_pred_r, y_pred_r, label=f'Predicted {object_type}')
         axes[i,1].plot(gt_radial, label=f'GT {object_type}', linestyle='--')
+        axes[i,1].set_ylabel("Speed (m/s)", fontsize=new_font)
+        _place_obj_label(axes[i,1])
         if i == 0:
-            axes[i,1].set_title(f'Radial Speeds (m/s)')
+            axes[i,1].set_title(f'Radial Speeds', fontsize=new_font)
         if i == num_obj_types - 1:
-            axes[i,1].set_xlabel('Frame Index')
+            axes[i,1].set_xlabel('Frame Index', fontsize=new_font)
         _shade_gaps(axes[i,1], metrics[object_type]["Frame ID"], gap_threshold)
         axes[i,1].grid(True, linestyle='--', alpha=0.5)
+        # axes[i,1].tick_params(axis='both', labelsize=new_font)
 
         # Tangential speed
         pred_tan = np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1)
@@ -558,15 +579,18 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         x_pred_t, y_pred_t = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_tan, gap_threshold)
         axes[i,2].plot(x_pred_t, y_pred_t, label=f'Predicted {object_type}')
         axes[i,2].plot(gt_tan, label=f'GT {object_type}', linestyle='--')
+        axes[i,2].set_ylabel("Speed (m/s)", fontsize=new_font)
+        _place_obj_label(axes[i,2])
         if i == 0:
-            axes[i,2].set_title(f'Tangential Speeds (m/s)')
-            axes[i,2].legend() # only add a legend on the top right plot
+            axes[i,2].set_title(f'Tangential Speeds', fontsize=new_font)
+            axes[i,2].legend(fontsize=new_font) # only add a legend on the top right plot
         if i == num_obj_types - 1:
-            axes[i,2].set_xlabel('Frame Index')
+            axes[i,2].set_xlabel('Frame Index', fontsize=new_font)
         _shade_gaps(axes[i,2], metrics[object_type]["Frame ID"], gap_threshold)
         axes[i,2].grid(True, linestyle='--', alpha=0.5)
+        # axes[i,2].tick_params(axis='both', labelsize=new_font)
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
     plt.show()
 
     # 2D Plot of Velocities
