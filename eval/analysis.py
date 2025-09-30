@@ -463,14 +463,26 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_metrics["Velocity Magnitude Error"])))}')
     
     # Create plots
+    def _shade_gaps(ax, frames, threshold):
+        # Shade regions where consecutive frames jump more than threshold
+        if len(frames) < 2:
+            return
+        gaps_idx = np.where(np.diff(frames) > threshold)[0]
+        for idx in gaps_idx:
+            x_start = frames[idx]
+            x_end = frames[idx + 1]
+            ax.axvspan(x_start, x_end, color='grey', alpha=0.3, zorder=0)
+
+    gap_threshold = 2 # Define a threshold for gaps in frame indices
     # Speed Line Plot
     for object_type in metrics:
         plt.figure(figsize=(10, 6))
         plt.title(f'Speed over Time for {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), 2), label=f'Predicted {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), 2), label=f'GT {object_type}', linestyle='--')
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), gap_threshold), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
         plt.ylabel('Speed (m/s)')
+        _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
         plt.legend()
         plt.show()
 
@@ -478,10 +490,11 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     for object_type in metrics:
         plt.figure(figsize=(10, 6))
         plt.title(f'Radial Speed over Time for {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), 2), label=f'Predicted {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), 2), label=f'GT {object_type}', linestyle='--')
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), gap_threshold), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
         plt.ylabel('Radial Speed (m/s)')
+        _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
         plt.legend()
         plt.show()
 
@@ -489,9 +502,10 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     for object_type in metrics:
         plt.figure(figsize=(10, 6))
         plt.title(f'Tangential Speed over Time for {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), 2), label=f'Predicted {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), 2), label=f'GT {object_type}', linestyle='--')
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
+        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), gap_threshold), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
+        _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
         plt.ylabel('Tangential Speed (m/s)')
         plt.legend()
         plt.show()
@@ -545,7 +559,6 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         ax.set_xlabel("Radial Velocity (m/s)") # The Radial Velocity is the x label because it is next to the vertical axis
         ax.set_title(f'2D Velocity Vectors for {object_type}')
 
-        plt.legend()
         def update_2d_velocity_plot(frame):
                 obj_line_segments.set_segments(obj_velocity_segments[frame:frame+frames_to_keep_in_animation])
                 gt_line_segments.set_segments(gt_velocity_segments[frame:frame+frames_to_keep_in_animation])
@@ -554,6 +567,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 ax.set_title(f'2D Velocity Vectors for {object_type}, frames {frame}-{frame+frames_to_keep_in_animation}')
                 return obj_line_segments, gt_line_segments
 
+        ax.legend(handles=[obj_line_segments, gt_line_segments], labels=["Predicted Velocities", "GT Velocities"])
         ani = FuncAnimation(fig, update_2d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
         # ani.save(f"2d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
         plt.show()
