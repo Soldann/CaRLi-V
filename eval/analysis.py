@@ -525,7 +525,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     new_font = current_font + 2
     plt.rcParams.update({'font.size': new_font})
 
-    fig, axes = plt.subplots(2, 3, figsize=(12, 4.5), sharex=True, sharey=True)
+    fig, axes = plt.subplots(2, 3, figsize=(12, 4), sharex=True, sharey=True)
     for i, object_type in enumerate(metrics):
         if metrics[object_type]["Frame ID"].size == 0:
             continue
@@ -563,7 +563,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         x_pred_r, y_pred_r = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_radial, gap_threshold)
         axes[i,1].plot(x_pred_r, y_pred_r, label=f'Predicted {object_type}')
         axes[i,1].plot(gt_radial, label=f'GT {object_type}', linestyle='--')
-        axes[i,1].set_ylabel("Speed (m/s)", fontsize=new_font)
+        # axes[i,1].set_ylabel("Speed (m/s)", fontsize=new_font)
         _place_obj_label(axes[i,1])
         if i == 0:
             axes[i,1].set_title(f'Radial Speeds', fontsize=new_font)
@@ -579,7 +579,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         x_pred_t, y_pred_t = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_tan, gap_threshold)
         axes[i,2].plot(x_pred_t, y_pred_t, label=f'Predicted {object_type}')
         axes[i,2].plot(gt_tan, label=f'GT {object_type}', linestyle='--')
-        axes[i,2].set_ylabel("Speed (m/s)", fontsize=new_font)
+        # axes[i,2].set_ylabel("Speed (m/s)", fontsize=new_font)
         _place_obj_label(axes[i,2])
         if i == 0:
             axes[i,2].set_title(f'Tangential Speeds', fontsize=new_font)
@@ -652,7 +652,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
         ax.legend(handles=[obj_line_segments, gt_line_segments], labels=["Predicted Velocities", "GT Velocities"])
         ani = FuncAnimation(fig, update_2d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
-        # ani.save(f"2d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
+        ani.save(f"2d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
         plt.show()
 
     # 3D Plot of Velocities with error colouring
@@ -703,7 +703,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
         ani = FuncAnimation(fig, update_3d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
         plt.legend()
-        # ani.save(f"3d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
+        ani.save(f"3d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
         plt.show()
 
 
