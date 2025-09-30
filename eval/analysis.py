@@ -188,9 +188,39 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
         point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
         point_cloud_data = transform_points(point_cloud_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
+        # record GT data
+        dataset_frame_index = int(key)
+        figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+        for figure in figures_on_frame:
+            if figure.parent_object.obj_class.name not in metrics:
+                metrics[figure.parent_object.obj_class.name] = {
+                    "Velocity Error": [],
+                    # "Absolute Component Wise Error": [],
+                    "Velocity Angular Error": [],
+                    "Weighted Velocity Angular Error": [],
+                    "GT Velocity Magnitudes": [], # This is used to compute the weighted velocity angular error (weighted by the gt velocity magnitude)
+                    "Obj Velocity Magnitudes": [],
+                    "Radial Error": [],
+                    "Tangential Error": [],
+                    "Velocity Magnitude Error": [],
+                    "GT Velocities": [],
+                    "Obj Velocities": [],
+                    "Radial Obj Velocities": [],
+                    "Radial GT Velocities": [],
+                    "Tangential Obj Velocities": [],
+                    "Tangential GT Velocities": [],
+                    "Frame ID": [],
+                }
+            object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
+            gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
+            gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
+            gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
+            metrics[object_type]["Tangential GT Velocities"].append(gt_tan_v)
+            metrics[object_type]["Radial GT Velocities"].append(gt_rad_v)
+            metrics[object_type]["GT Velocities"].append(gt_velocity)
+
+
         if (DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename).exists():
-            dataset_frame_index = int(key)
-            figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
             predicted_pcd = o3d.t.io.read_point_cloud(str(DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename))
             predicted_pcd = np.column_stack((
                 predicted_pcd.point.positions.numpy(),
@@ -201,7 +231,6 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
 
             transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -R_lidar_2_left_cam.T @ t_lidar_2_left_cam)
 
-            frame_counter += 1
             for figure in figures_on_frame:
                 object_geometry = figure.geometry
                 position = object_geometry.position
@@ -240,26 +269,6 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                 mask = np.linalg.norm(point_cloud_data, axis=1) < 6
                 mask2 = np.linalg.norm(point_cloud_data, axis=1) > 1
 
-                if figure.parent_object.obj_class.name not in metrics:
-                    metrics[figure.parent_object.obj_class.name] = {
-                        "Velocity Error": [],
-                        # "Absolute Component Wise Error": [],
-                        "Velocity Angular Error": [],
-                        "Weighted Velocity Angular Error": [],
-                        "GT Velocity Magnitudes": [], # This is used to compute the weighted velocity angular error (weighted by the gt velocity magnitude)
-                        "Obj Velocity Magnitudes": [],
-                        "Radial Error": [],
-                        "Tangential Error": [],
-                        "Velocity Magnitude Error": [],
-                        "GT Velocities": [],
-                        "Obj Velocities": [],
-                        "Radial Obj Velocities": [],
-                        "Radial GT Velocities": [],
-                        "Tangential Obj Velocities": [],
-                        "Tangential GT Velocities": [],
-                        "Frame ID": [],
-                    }
-
                 object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
                 gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
 
@@ -268,17 +277,14 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                 # errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
                 metrics[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
                 metrics[object_type]["Weighted Velocity Angular Error"].append(metrics[object_type]["Velocity Angular Error"][-1] * np.linalg.norm(gt_velocity))
-                metrics[object_type]["GT Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
                 metrics[object_type]["Obj Velocities"].append(object_velocity)
-                metrics[object_type]["GT Velocities"].append(gt_velocity)
+                metrics[object_type]["GT Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
 
                 rad_v, tan_v = decompose_v(object_velocity, object_centroid)
                 gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
                 
                 metrics[object_type]["Radial Obj Velocities"].append(rad_v)
-                metrics[object_type]["Radial GT Velocities"].append(gt_rad_v)
                 metrics[object_type]["Tangential Obj Velocities"].append(tan_v)
-                metrics[object_type]["Tangential GT Velocities"].append(gt_tan_v)
                 metrics[object_type]["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
                 metrics[object_type]["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
                 metrics[object_type]["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
@@ -293,6 +299,8 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                       f'Radial Error: {metrics[object_type]["Radial Error"][-1]}',
                       f'Tangential Error: {metrics[object_type]["Tangential Error"][-1]}',
                       f'Magnitude Error:{metrics[object_type]["Velocity Magnitude Error"][-1]}')
+
+        frame_counter += 1 # update frame counter to keep track of what frames have predicted data
 
         if i >= len(gt_objects[next(iter(gt_objects))]) - 2: # Don't check the last frame because no gt velocity
             break
@@ -479,7 +487,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.figure(figsize=(10, 6))
         plt.title(f'Speed over Time for {object_type}')
         plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), gap_threshold), label=f'GT {object_type}', linestyle='--')
+        plt.plot(np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
         plt.ylabel('Speed (m/s)')
         _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
@@ -491,7 +499,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.figure(figsize=(10, 6))
         plt.title(f'Radial Speed over Time for {object_type}')
         plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), gap_threshold), label=f'GT {object_type}', linestyle='--')
+        plt.plot(np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
         plt.ylabel('Radial Speed (m/s)')
         _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
@@ -503,7 +511,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         plt.figure(figsize=(10, 6))
         plt.title(f'Tangential Speed over Time for {object_type}')
         plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1), gap_threshold), label=f'Predicted {object_type}')
-        plt.plot(*break_gaps_with_nan(metrics[object_type]["Frame ID"], np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), gap_threshold), label=f'GT {object_type}', linestyle='--')
+        plt.plot(np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1), label=f'GT {object_type}', linestyle='--')
         plt.xlabel('Frame Index')
         _shade_gaps(plt.gca(), metrics[object_type]["Frame ID"], gap_threshold)
         plt.ylabel('Tangential Speed (m/s)')
