@@ -29,7 +29,7 @@ source install/setup.bash
 ```
 
 ## Usage
-Several launch files exist to facilitate the running of the pipeline. If running on live data, the nodes expect LiDAR messages to be broadcast on the topic `/hesai_lidar` as a PointCloud2 topic, RADAR ADC data to be broadcast as an Image on `/radar_ADC`, and image data in `/camera/image_raw`. Otherwise, see [Testing](#testing) for testing with an annotated dataset.
+Several launch files exist to facilitate the running of the pipeline.
 
 To run the full pipeline:
 ```
@@ -40,6 +40,10 @@ To run only the radar-lidar fusion node (for radial velocities only):
 ```
 ros2 launch carli_v radar_mode.launch.py
 ```
+
+We developed the ROS node using usage with our own sensor rig consisting of a Zed 2i Camera, HESAI QT128 LiDAR, and V-MD3 RADAR.
+![Sensor Rig Used for Testing](assets/Sensor_rig.png)
+If running on live data, the nodes expect LiDAR messages to be broadcast on the topic `/hesai_lidar` as a PointCloud2 topic, RADAR ADC data to be broadcast as an Image on `/radar_ADC`, and image data in `/camera/image_raw`. Modifications will have to be made for running with other sensors. Otherwise, see [Testing](#testing) for testing with an annotated dataset.
 
 ## Testing
 To reproduce the test results in our paper, download our annotated ground-truth dataset into the folder `/datasets` under this repository (public link will be provided later, for now on request only). You will need to download the rosbag of sensor data seperately as well.
