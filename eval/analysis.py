@@ -594,7 +594,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     plt.show()
 
     # 2D Plot of Velocities
-    frames_to_keep_in_animation=3
+    frames_to_keep_in_animation=2
     for object_type in metrics:
         fig = plt.figure(figsize=(10, 10))
         ax = fig.add_subplot(111)
@@ -607,7 +607,11 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
-        gt_velocities = metrics[object_type]["GT Velocities"][:,:2].reshape(-1, 1, 2)[:,:,::-1] # Swap x and y so radial direction points up
+        frame_ids = metrics[object_type]["Frame ID"].astype(int)
+        if frame_ids.size == 0:
+            gt_velocities = np.empty((0, 1, 2))
+        else:
+            gt_velocities = metrics[object_type]["GT Velocities"][:, :2].reshape(-1, 1, 2)[:, :, ::-1]  # Select GT only at predicted frame indices and swap x/y
         gt_velocity_segments = np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1)
         gt_line_segments = LineCollection(gt_velocity_segments[:frames_to_keep_in_animation], cmap='viridis', norm=colour_norm, label="GT Velocities", linestyle='--')
         gt_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
@@ -642,21 +646,26 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         ax.set_xlabel("Radial Velocity (m/s)") # The Radial Velocity is the x label because it is next to the vertical axis
         ax.set_title(f'2D Velocity Vectors for {object_type}')
 
+        counter = 0
         def update_2d_velocity_plot(frame):
-                obj_line_segments.set_segments(obj_velocity_segments[frame:frame+frames_to_keep_in_animation])
+            nonlocal counter
+            if frame == metrics[object_type]["Frame ID"][counter]:
+                obj_line_segments.set_segments(obj_velocity_segments[counter:counter+frames_to_keep_in_animation])
                 gt_line_segments.set_segments(gt_velocity_segments[frame:frame+frames_to_keep_in_animation])
-                obj_line_segments.set_array(metrics[object_type]["Velocity Error"][frame:frame+frames_to_keep_in_animation])
+                obj_line_segments.set_array(metrics[object_type]["Velocity Error"][counter:counter+frames_to_keep_in_animation])
                 gt_line_segments.set_array(metrics[object_type]["Velocity Error"][frame:frame+frames_to_keep_in_animation])
-                ax.set_title(f'2D Velocity Vectors for {object_type}, frames {frame}-{frame+frames_to_keep_in_animation}')
-                return obj_line_segments, gt_line_segments
+                counter += 1
+            ax.set_title(f'2D Velocity Vectors for {object_type}, frames {frame}-{frame+frames_to_keep_in_animation}')
+            return obj_line_segments, gt_line_segments
 
         ax.legend(handles=[obj_line_segments, gt_line_segments], labels=["Predicted Velocities", "GT Velocities"])
         ani = FuncAnimation(fig, update_2d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
         ani.save(f"2d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
+        counter = 0
         plt.show()
 
     # 3D Plot of Velocities with error colouring
-    frames_to_keep_in_animation=3
+    frames_to_keep_in_animation=2
     for object_type in metrics:
         fig = plt.figure(figsize=(10, 7))
         ax = fig.add_subplot(111, projection='3d')
@@ -670,7 +679,11 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         obj_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
         ax.add_collection(obj_line_segments)
 
-        gt_velocities = metrics[object_type]["GT Velocities"].reshape(-1, 1, 3)
+        frame_ids = metrics[object_type]["Frame ID"].astype(int)
+        if frame_ids.size == 0:
+            gt_velocities = np.empty((0, 1, 3))
+        else:
+            gt_velocities = metrics[object_type]["GT Velocities"][:, :3].reshape(-1, 1, 3)
         gt_velocity_segments = np.concatenate([gt_velocities[:-1], gt_velocities[1:]], axis=1)
         gt_line_segments = Line3DCollection(gt_velocity_segments[:frames_to_keep_in_animation], cmap='viridis', norm=colour_norm, label="GT Velocities", linestyle='--')
         gt_line_segments.set_array(metrics[object_type]["Velocity Error"])  # Set colours for each segment
@@ -693,17 +706,22 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         ax.set_title(f'3D Velocity Vectors for {object_type}')
         ax.legend()
 
+        counter = 0
         def update_3d_velocity_plot(frame):
-                obj_line_segments.set_segments(obj_velocity_segments[frame:frame+frames_to_keep_in_animation])
+            nonlocal counter
+            if frame == metrics[object_type]["Frame ID"][counter]:
+                obj_line_segments.set_segments(obj_velocity_segments[counter:counter+frames_to_keep_in_animation])
                 gt_line_segments.set_segments(gt_velocity_segments[frame:frame+frames_to_keep_in_animation])
-                obj_line_segments.set_array(metrics[object_type]["Velocity Error"][frame:frame+frames_to_keep_in_animation])
+                obj_line_segments.set_array(metrics[object_type]["Velocity Error"][counter:counter+frames_to_keep_in_animation])
                 gt_line_segments.set_array(metrics[object_type]["Velocity Error"][frame:frame+frames_to_keep_in_animation])
-                ax.set_title(f'3D Velocity Vectors for {object_type}, frames {frame}-{frame+frames_to_keep_in_animation}')
-                return obj_line_segments, gt_line_segments
+                counter += 1
+            ax.set_title(f'3D Velocity Vectors for {object_type}, frames {frame}-{frame+frames_to_keep_in_animation}')
+            return obj_line_segments, gt_line_segments
 
         ani = FuncAnimation(fig, update_3d_velocity_plot, frames=len(gt_velocity_segments)-frames_to_keep_in_animation, interval=150, blit=False, repeat=False)
         plt.legend()
         ani.save(f"3d_velocity_{object_type}.mp4", writer="ffmpeg", fps=6.67)
+        counter = 0
         plt.show()
 
 
