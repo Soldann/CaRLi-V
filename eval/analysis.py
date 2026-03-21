@@ -545,8 +545,8 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         pred_speed = np.linalg.norm(metrics[object_type]["Obj Velocities"], axis=1)
         gt_speed = np.linalg.norm(metrics[object_type]["GT Velocities"], axis=1)
         x_pred, y_pred = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_speed, gap_threshold)
-        axes[i,0].plot(x_pred, y_pred, label=f'Predicted {object_type}')
-        axes[i,0].plot(gt_speed, label=f'GT {object_type}', linestyle='--')
+        axes[i,0].plot(x_pred, y_pred, label=f'Prediction')
+        axes[i,0].plot(gt_speed, label=f'Ground Truth', linestyle='--')
         axes[i,0].set_ylabel("Speed (m/s)", fontsize=new_font)
         _place_obj_label(axes[i,0])
         if i == 0:
@@ -561,8 +561,8 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         pred_radial = np.linalg.norm(metrics[object_type]["Radial Obj Velocities"], axis=1)
         gt_radial = np.linalg.norm(metrics[object_type]["Radial GT Velocities"], axis=1)
         x_pred_r, y_pred_r = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_radial, gap_threshold)
-        axes[i,1].plot(x_pred_r, y_pred_r, label=f'Predicted {object_type}')
-        axes[i,1].plot(gt_radial, label=f'GT {object_type}', linestyle='--')
+        axes[i,1].plot(x_pred_r, y_pred_r, label=f'Prediction')
+        axes[i,1].plot(gt_radial, label=f'Ground Truth', linestyle='--')
         # axes[i,1].set_ylabel("Speed (m/s)", fontsize=new_font)
         _place_obj_label(axes[i,1])
         if i == 0:
@@ -577,8 +577,8 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         pred_tan = np.linalg.norm(metrics[object_type]["Tangential Obj Velocities"], axis=1)
         gt_tan = np.linalg.norm(metrics[object_type]["Tangential GT Velocities"], axis=1)
         x_pred_t, y_pred_t = break_gaps_with_nan(metrics[object_type]["Frame ID"], pred_tan, gap_threshold)
-        axes[i,2].plot(x_pred_t, y_pred_t, label=f'Predicted {object_type}')
-        axes[i,2].plot(gt_tan, label=f'GT {object_type}', linestyle='--')
+        axes[i,2].plot(x_pred_t, y_pred_t, label=f'Prediction')
+        axes[i,2].plot(gt_tan, label=f'Ground Truth', linestyle='--')
         # axes[i,2].set_ylabel("Speed (m/s)", fontsize=new_font)
         _place_obj_label(axes[i,2])
         if i == 0:
