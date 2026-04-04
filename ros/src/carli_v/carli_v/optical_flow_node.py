@@ -116,11 +116,11 @@ def plot_flow_cv2(im, flow, color=(255, 0, 255), step=20):
     # img_vis = im.copy()
     img_vis = im
 
-    for i in range(0, h, step):
-        for j in range(0, w, step):
-            pt1 = (int(x1[i, j]), int(y1[i, j]))
-            pt2 = (int(x1[i, j] + dx[i, j]), int(y1[i, j] + dy[i, j]))
-            cv2.arrowedLine(img_vis, pt1, pt2, color, 1, tipLength=0.3)
+    # for i in range(0, h, step):
+    #     for j in range(0, w, step):
+    #         pt1 = (int(x1[i, j]), int(y1[i, j]))
+    #         pt2 = (int(x1[i, j] + dx[i, j]), int(y1[i, j] + dy[i, j]))
+    #         cv2.arrowedLine(img_vis, pt1, pt2, color, 1, tipLength=0.3)
 
     return img_vis
 

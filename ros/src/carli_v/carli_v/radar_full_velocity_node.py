@@ -59,6 +59,9 @@ class RadarFullVelocityNode(Node):
         self.lidar_subscriber = self.create_subscription(
             PointCloud2, '/lidar_points_with_radial_velocity', self.lidar_callback, 10)
 
+        self.lidar_plain_subscriber = self.create_subscription(
+            PointCloud2, '/lidar_points', self.lidar_plain_callback, 10)
+
         self.camera_info_subscription = self.create_subscription(
             CameraInfo,
             '/camera/camera_info',  # Topic name
@@ -84,12 +87,73 @@ class RadarFullVelocityNode(Node):
         self.marker_publisher = self.create_publisher(MarkerArray, '/lidar_full_velocity_arrows', 10)
 
         self.bridge = CvBridge()
-        self.point_projection_publisher = self.create_publisher(Image, '/projected_points', 10)
+        self.lidar_projection_publisher = self.create_publisher(Image, '/projected_lidar_points', 10)
+        self.full_velocity_projection_publisher = self.create_publisher(Image, '/projected_full_velocity_points', 10)
 
         # Image delay parameters
         self.image_buffer = deque(maxlen=50)  # store recent image msgs
         self.uv_image_buffer = deque(maxlen=50)
-        self.image_delay = -0.08  # delay in seconds (100ms)
+        self.image_delay = -1  # delay in seconds (100ms)
+
+    def lidar_plain_callback(self, msg):
+        # Decode raw lidar points (assumes fields: x, y, z)
+        fmt = '<fff f H Q'  # Just XYZ
+        point_step = msg.point_step
+        points = [struct.unpack(fmt, msg.data[i:i+point_step]) for i in range(0, len(msg.data), point_step)]
+        points = np.array(points)  # Shape: (N, 3)
+
+        if self.K_matrix is None:
+            self.get_logger().warn("K_matrix is None, skipping projection.")
+            return
+
+        if self.image_buffer:
+            closest_image = self.image_buffer[-1]  # Use most recent image
+            image_time = Time.from_msg(closest_image.header.stamp).nanoseconds / 1e9
+            lidar_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+            self.get_logger().info(f"Projecting raw lidar points. Delay: {image_time - lidar_time:.3f} seconds")
+
+            cv_image = self.bridge.imgmsg_to_cv2(closest_image, "bgr8").astype(np.uint8)
+            self.image = cv_image
+
+            # Project lidar points onto image
+            points_T = points.T  # (3, N)
+            points_4D = np.vstack((points_T, np.ones((1, points_T.shape[1]))))  # Add dummy 4th row for compatibility
+
+            # Transform from lidar frame to camera frame
+            transformed_pts = self.transform_points(points_4D, "hesai_lidar", "zed_left_camera_frame")
+            transformed_pts = transformed_pts[:3, :]  # remove extra dummy row
+
+            # # Manual translation (in meters)
+            # translation_offset = np.array([[0.1],   # x shift (backward +, forward -)
+            #                             [-0.08],   # y shift (right +, left -)
+            #                             [0.05]]) # z shift (down +, up -)
+
+            # # Apply translation
+            # transformed_pts += translation_offset
+
+            # # Optional: Manual rotation (in radians)
+            # theta = np.radians(2.0)  # rotate around Y axis (yaw) by 2 degrees
+            # rotation_matrix = np.array([
+            #     [np.cos(theta), 0, np.sin(theta)],
+            #     [0, 1, 0],
+            #     [-np.sin(theta), 0, np.cos(theta)]
+            # ])
+
+            # # Apply rotation
+            # transformed_pts = rotation_matrix @ transformed_pts
+
+            # Reorder + sign flip as in other functions
+            transformed_pts[[0, 1, 2], :] = transformed_pts[[1, 2, 0], :]
+            transformed_pts[[0, 1], :] = -transformed_pts[[0, 1], :]
+
+            projected_image = self.project_points_to_image(
+                np.vstack((transformed_pts, np.zeros((1, transformed_pts.shape[1])))),
+                cv_image.copy(),
+                self.K_matrix
+            )
+
+            projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
+            self.lidar_projection_publisher.publish(projected_msg)
 
     def numpy_to_pointcloud2(self, points, frame_id="zed_camera_link", timestamp=None):
         """
@@ -187,6 +251,7 @@ class RadarFullVelocityNode(Node):
         if not return_points_only:
             points_2d_int = points_2d_int[:, mask]
 
+        velocities = None
         if return_points_only:
             # If no image is provided, return the 2D points
             return points_2d_int, mask
@@ -342,7 +407,7 @@ class RadarFullVelocityNode(Node):
 
         projected_image = self.project_points_to_image(transformed_pts, self.image, self.K_matrix, velocities=full_velocity, return_points_only=False)
         projected_msg = self.bridge.cv2_to_imgmsg(projected_image, encoding='bgr8')
-        self.point_projection_publisher.publish(projected_msg)
+        self.full_velocity_projection_publisher.publish(projected_msg)
 
         return velocities, mask
 
