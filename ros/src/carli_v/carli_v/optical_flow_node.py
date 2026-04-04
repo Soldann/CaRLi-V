@@ -157,6 +157,7 @@ class OpticalFlowNode(Node):
         self.K_matrix = None
 
         self.last_image = None
+        self.min_dt = 0.10  # Only compute optical flow when at least this many seconds have elapsed (bag time) since the last computation
 
         self.device = torch.device('cuda')
         self.model = neuflow.NeuFlow.from_pretrained("Study-is-happy/neuflow-v2").to(self.device)
@@ -202,54 +203,57 @@ class OpticalFlowNode(Node):
         bridge = CvBridge()
         cv_image = bridge.imgmsg_to_cv2(msg, "bgr8").astype(np.uint8)  # Convert ROS Image to OpenCV format
 
+        current_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
+
         if self.last_image is None or self.K_matrix is None:
             # If this is the first image or camera info is not available, just store the image
             self.last_image = cv_image
             self.last_image_timestamp = msg.header.stamp
             return
-        else:
-            # Compute optical flow using NeuFlow
-            im1 = torch.from_numpy(self.last_image).permute(2, 0, 1)
-            im2 = torch.from_numpy(cv_image).permute(2, 0, 1)
-            im1 = im1[None].to(self.device)
-            im2 = im2[None].to(self.device)
 
+        prev_time = Time.from_msg(self.last_image_timestamp).nanoseconds / 1e9
+        # if current_time - prev_time < self.min_dt:
+        #     # Not enough time has elapsed since the last optical flow computation; skip this frame
+        #     return
 
-            padder = frame_utils.InputPadder(im1.shape, mode='kitti', padding_factor=16)
-            im1, im2 = padder.pad(im1, im2)
-            self.model.init_bhwd(im1.shape[0], im1.shape[-2], im1.shape[-1], self.device)
-            with torch.no_grad():
-                flow = self.model(im1.half(), im2.half())[-1][0]
-                flow = flow.permute(1,2,0).cpu().numpy()[:,...]
+        # Compute optical flow using NeuFlow
+        im1 = torch.from_numpy(self.last_image).permute(2, 0, 1)
+        im2 = torch.from_numpy(cv_image).permute(2, 0, 1)
+        im1 = im1[None].to(self.device)
+        im2 = im2[None].to(self.device)
 
-            u_1, v_1, u_2, v_2 = flow2uv_full(flow, self.K_matrix)
+        padder = frame_utils.InputPadder(im1.shape, mode='kitti', padding_factor=16)
+        im1, im2 = padder.pad(im1, im2)
+        self.model.init_bhwd(im1.shape[0], im1.shape[-2], im1.shape[-1], self.device)
+        with torch.no_grad():
+            flow = self.model(im1.half(), im2.half())[-1][0]
+            flow = flow.permute(1,2,0).cpu().numpy()[:,...]
 
-            plotted_flow = plot_flow_cv2(self.last_image.astype(np.uint8), flow, color=(255, 0, 255), step=20)
+        u_1, v_1, u_2, v_2 = flow2uv_full(flow, self.K_matrix)
 
-            # Convert BGR8 OpenCV image to ROS 2 Image message
-            ros_image = self.bridge.cv2_to_imgmsg(plotted_flow, encoding='bgr8')
-            self.optical_flow_publisher.publish(ros_image)
+        plotted_flow = plot_flow_cv2(self.last_image.astype(np.uint8), flow, color=(255, 0, 255), step=20)
 
-            current_time = Time.from_msg(msg.header.stamp).nanoseconds / 1e9
-            prev_time = Time.from_msg(self.last_image_timestamp).nanoseconds / 1e9
+        # Convert BGR8 OpenCV image to ROS 2 Image message
+        ros_image = self.bridge.cv2_to_imgmsg(plotted_flow, encoding='bgr8')
+        self.optical_flow_publisher.publish(ros_image)
 
-            # publish uv_map
-            uv_map_msg = StampedFloat32MultiArray()
-            uv_data = np.array([u_1, v_1, u_2, v_2])
-            uv_map_msg.stamp = msg.header.stamp 
-            uv_map_msg.dt = Float32()
-            uv_map_msg.dt.data = current_time - prev_time  # Convert to seconds
-            uv_map_msg.array.data = uv_data.flatten().tolist()
-            uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
-            uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
-            uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="cols", size=uv_data.shape[2], stride=1))
-            self.optical_flow_uv_publisher.publish(uv_map_msg)
+        # publish uv_map
+        uv_map_msg = StampedFloat32MultiArray()
+        uv_data = np.array([u_1, v_1, u_2, v_2])
+        uv_map_msg.stamp = msg.header.stamp
+        uv_map_msg.dt = Float32()
+        uv_map_msg.dt.data = current_time - prev_time  # Convert to seconds
+        uv_map_msg.array.data = uv_data.flatten().tolist()
+        uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="depth", size=uv_data.shape[0], stride=uv_data.shape[1] * uv_data.shape[2]))
+        uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="rows", size=uv_data.shape[1], stride=uv_data.shape[2]))
+        uv_map_msg.array.layout.dim.append(MultiArrayDimension(label="cols", size=uv_data.shape[2], stride=1))
+        self.optical_flow_uv_publisher.publish(uv_map_msg)
 
-            self.get_logger().info('Converted and published optical flow image.')
+        self.get_logger().info('Converted and published optical flow image.')
 
-            # Update the last image
-            self.last_image = cv_image
-            self.last_image_timestamp = msg.header.stamp
+        # Update the last image
+        self.last_image = cv_image
+        self.last_image_timestamp = msg.header.stamp
 
 def main(args=None):
     rclpy.init(args=args)

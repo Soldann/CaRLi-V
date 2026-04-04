@@ -13,9 +13,26 @@ import open3d as o3d
 from pathlib import Path
 import pickle
 import argparse
+import os
+
+# python3 eval/analysis.py --dataset-path /mnt/m/carli_v/datasets --predicted-path /home/andres/CaRLi-V/datasets/baseline/predicted --force-recompute
+# python3 eval/analysis.py --dataset-path /mnt/m/carli_v/datasets --predicted-path /home/andres/CaRLi-V/datasets/it_7/predicted --plot-title "Intensity Threshold Offset: 7dB" --force-recompute
 
 SCRIPT_PATH = Path(__file__).parent
-DATASET_PATH = SCRIPT_PATH.parent / 'datasets'
+
+def resolve_dataset_path(dataset_path: str | None = None) -> Path:
+    if dataset_path is not None:
+        return Path(dataset_path).expanduser()
+
+    env_dataset_path = os.environ.get("CARLI_V_DATASET_PATH")
+    if env_dataset_path:
+        return Path(env_dataset_path).expanduser()
+
+    wsl_dataset_path = Path("/mnt/m/carli_v/datasets")
+    if wsl_dataset_path.exists():
+        return wsl_dataset_path
+
+    return SCRIPT_PATH.parent / "datasets"
 
 def decompose_v(velocity, position):
     '''
@@ -162,7 +179,7 @@ class Object():
     def set_velocity(self, velocity):
         self.velocity = velocity
 
-def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds):
+def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds, dataset_path: Path, predicted_path: Path = None):
     """
     Compute the GT and predicted velocities, and return a dictionary of values
     :param frame_map: Supervisely generated mapping from frame index to pointcloud filename
@@ -185,7 +202,7 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
 
         if i < 0: # Change this to skip some frames at the beginning if needed
             continue
-        point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
+        point_cloud_points = sly.pointcloud.read(str(dataset_path / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
         point_cloud_data = transform_points(point_cloud_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
         # record GT data
@@ -220,8 +237,9 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
             metrics[object_type]["GT Velocities"].append(gt_velocity)
 
 
-        if (DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename).exists():
-            predicted_pcd = o3d.t.io.read_point_cloud(str(DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename))
+        _predicted_dir = predicted_path if predicted_path is not None else dataset_path / "scene_1" / "predicted"
+        if (_predicted_dir / pointcloud_filename).exists():
+            predicted_pcd = o3d.t.io.read_point_cloud(str(_predicted_dir / pointcloud_filename))
             predicted_pcd = np.column_stack((
                 predicted_pcd.point.positions.numpy(),
                 predicted_pcd.point.vx.numpy(),
@@ -332,21 +350,26 @@ def break_gaps_with_nan(x_data, y_data, threshold):
     y_new[np.setdiff1d(np.arange(len(y_new)), insert_indices)] = y_data
     return x_new, y_new
 
-def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
+def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False, dataset_path=None, predicted_path=None, plot_title=None):
     ### LOAD THE DATASET
+    dataset_path = resolve_dataset_path(dataset_path)
+    print(f"Using dataset path: {dataset_path}")
+    if predicted_path is not None:
+        predicted_path = Path(predicted_path).expanduser().resolve()
+        print(f"Using predicted path: {predicted_path}")
 
     # Path to the downloaded annotation JSON file
-    annotation_path = DATASET_PATH / "scene_1" / "annotation.json"
+    annotation_path = dataset_path / "scene_1" / "annotation.json"
 
     # Path to the mapping file
-    mapping_file = DATASET_PATH / "scene_1" / "frame_pointcloud_map.json"
+    mapping_file = dataset_path / "scene_1" / "frame_pointcloud_map.json"
 
     # Load the mapping
     with mapping_file.open("r") as f:
         frame_map = json.load(f)
 
     # Load project metadata (assuming you have it downloaded as well)
-    project_meta_json_path = DATASET_PATH / "meta.json"
+    project_meta_json_path = dataset_path / "meta.json"
     project_meta = sly.ProjectMeta.from_json(sly.json.load_json_file(str(project_meta_json_path)))
 
     # Load annotation from JSON file
@@ -381,7 +404,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
             pointcloud_filename = frame_map.get(key)
 
             figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
-            point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
+            point_cloud_points = sly.pointcloud.read(str(dataset_path / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
             point_cloud_data = point_cloud_points
 
             timestamp = float(pointcloud_filename.removesuffix(".pcd"))
@@ -442,12 +465,12 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 
     ### LOAD PREDICTIONS AND CALCULATE DIFFERENCES
 
-    if not force_recompute and (SCRIPT_PATH / 'errors.pkl').exists():
+    if not force_recompute and predicted_path is None and (SCRIPT_PATH / 'errors.pkl').exists():
         print("Precomputed velocities found, loading them...")
         with (SCRIPT_PATH / 'errors.pkl').open('rb') as file:
             metrics = pickle.load(file)
     else:
-        metrics = compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds)
+        metrics = compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds, dataset_path, predicted_path)
         with (SCRIPT_PATH / 'errors.pkl').open('wb') as file:
             pickle.dump(metrics, file)
 
@@ -526,6 +549,8 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     plt.rcParams.update({'font.size': new_font})
 
     fig, axes = plt.subplots(2, 3, figsize=(12, 4), sharex=True, sharey=True)
+    if plot_title:
+        fig.suptitle(plot_title, fontsize=new_font + 1, fontweight='bold')
     for i, object_type in enumerate(metrics):
         if metrics[object_type]["Frame ID"].size == 0:
             continue
@@ -590,7 +615,8 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         axes[i,2].grid(True, linestyle='--', alpha=0.5)
         # axes[i,2].tick_params(axis='both', labelsize=new_font)
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    top_margin = 0.90 if plot_title else 0.97
+    plt.tight_layout(rect=[0, 0.03, 1, top_margin])
     plt.show()
 
     # 2D Plot of Velocities
@@ -728,9 +754,12 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
 if __name__ == "__main__":
     # Read command line arguments
     parser = argparse.ArgumentParser(description="Evaluate point cloud velocity predictions.")
+    parser.add_argument('--dataset-path', type=str, default=None, help='Dataset root path. Defaults to CARLI_V_DATASET_PATH, then /mnt/m/carli_v/datasets when available, then the repo-local datasets directory.')
+    parser.add_argument('--predicted-path', type=str, default=None, help='Path to the folder containing predicted .pcd files. Defaults to <dataset-path>/scene_1/predicted.')
     parser.add_argument('--stop-after', type=int, default=-1, help='Stop processing after this many frames. By default, process all frames.')
     parser.add_argument('--visualize-pointclouds', action='store_true', help='Visualize point clouds and bounding boxes.')
     parser.add_argument('--force-recompute', action='store_true', help='Force recomputation of GTs even if precomputed files exist.')
+    parser.add_argument('--plot-title', type=str, default=None, help='Optional title for the combined ablation plot, e.g. the parameter values used for this run.')
     args = parser.parse_args()
 
-    main(args.stop_after, args.visualize_pointclouds, args.force_recompute)
+    main(args.stop_after, args.visualize_pointclouds, args.force_recompute, args.dataset_path, args.predicted_path, args.plot_title)

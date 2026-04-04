@@ -9,4 +9,5 @@ eval/errors.pkl
 eval/objects.pkl
 eval/timestamp_to_index.pkl
 datasets/
-my_venv/
+.my_venv/
+.codex

@@ -33,11 +33,34 @@ class RadarProcessor(Node):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        # ============================================================
+        # ABLATION STUDY PARAMETERS (configurable via ROS2 parameters)
+        # ============================================================
+        self.declare_parameter('intensity_threshold_offset', 5.0)
+        self.declare_parameter('morph_filter_elev', 10)
+        self.declare_parameter('morph_filter_azimuth', 10)
+        self.declare_parameter('morph_filter_range', 20)
+        self.declare_parameter('target_azimuth_bins', 50)
+        self.declare_parameter('target_elevation_bins', 2)
+
+        self.intensity_threshold_offset = self.get_parameter('intensity_threshold_offset').value
+        self.morph_filter_size = (
+            self.get_parameter('morph_filter_elev').value,
+            self.get_parameter('morph_filter_azimuth').value,
+            self.get_parameter('morph_filter_range').value,
+        )
+        self.target_azimuth_bins = self.get_parameter('target_azimuth_bins').value
+        self.target_elevation_bins = self.get_parameter('target_elevation_bins').value
+
+        self.get_logger().info(f'Ablation params: intensity_offset={self.intensity_threshold_offset}, '
+                               f'morph_filter={self.morph_filter_size}, '
+                               f'azimuth_bins={self.target_azimuth_bins}, '
+                               f'elevation_bins={self.target_elevation_bins}')
+        # ============================================================
+
         # Compute RADAR config
         self.radar_h_fov = 50*2
         self.radar_v_fov = 30*2
-        self.target_azimuth_bins = 50
-        self.target_elevation_bins = 2
 
         self.radar_config = {
             'num_tx': 3,
@@ -338,7 +361,7 @@ class RadarProcessor(Node):
         velocity_cube = velocity_cube * self.doppler_resolution  # Convert to m/s
 
         # Thresholding — set weak points to center bin (index 16)
-        min_intensity_dB = magnitude_db.max() - 5
+        min_intensity_dB = magnitude_db.max() - self.intensity_threshold_offset
         velocity_cube[np.max(magnitude_db, axis=0) < min_intensity_dB] = 0  # Assign center bin for weak detections
         
         # np.where(np.max(velocity_cube, axis=-1) < np.abs(np.min(velocity_cube, axis=-1)), np.min(velocity_cube, axis=-1), np.max(velocity_cube, axis=-1))
@@ -475,8 +498,8 @@ class RadarProcessor(Node):
         elevation_indices[elevation_indices == len(elevation_bins)] = len(elevation_bins) - 1  # Ensure the last bin is not out of bounds
 
         velocities = np.zeros((lidar_points.shape[0]))
-        filtered_min = minimum_filter(velocity_cube, size=(10,10,20))
-        filtered_max = maximum_filter(velocity_cube, size=(10,10,20))
+        filtered_min = minimum_filter(velocity_cube, size=self.morph_filter_size)
+        filtered_max = maximum_filter(velocity_cube, size=self.morph_filter_size)
         extreme_values = np.where(np.abs(filtered_max) > np.abs(filtered_min), filtered_max, filtered_min)
 
         debug_images["velocity_readings"] = np.where(np.abs(np.max(velocity_cube, axis=0)) < np.abs(np.min(velocity_cube, axis=0)), np.min(velocity_cube, axis=0), np.max(velocity_cube, axis=0)) + 16
