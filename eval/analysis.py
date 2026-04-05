@@ -1,3 +1,4 @@
+import hydra
 import supervisely as sly
 import json
 import numpy as np
@@ -16,6 +17,18 @@ import argparse
 
 SCRIPT_PATH = Path(__file__).parent
 DATASET_PATH = SCRIPT_PATH.parent / 'datasets'
+
+import sys
+sys.path.insert(0, str(SCRIPT_PATH.absolute().parent.parent / 'OpenSceneFlow')) # Add the root of the repo to the path so we can import the model wrapper
+import hydra
+from src.trainer import ModelWrapper
+import torch
+from omegaconf import DictConfig
+from hydra.core.hydra_config import HydraConfig
+import lightning.pytorch as pl
+from hydra import initialize_config_dir, compose
+from hydra.core.hydra_config import HydraConfig
+from hydra.core.global_hydra import GlobalHydra
 
 def decompose_v(velocity, position):
     '''
@@ -146,9 +159,10 @@ def extract_points_inside_bbox(point_cloud, position, dimensions, rotation_vecto
     within_z = (-half_dims[2] <= transformed_points[:, 2]) & (transformed_points[:, 2] <= half_dims[2])
 
     # Extract points that belong inside bounding box (in the original frame)
-    filtered_points = point_cloud[within_x & within_y & within_z]
+    mask = within_x & within_y & within_z
+    filtered_points = point_cloud[mask]
 
-    return filtered_points
+    return filtered_points, mask
 
 class Object():
     def __init__(self, name, centroid, timestamp, points=None):
@@ -161,6 +175,181 @@ class Object():
 
     def set_velocity(self, velocity):
         self.velocity = velocity
+
+def compute_gt_and_predicted_velocities_from_model(model, R_lidar_2_left_cam, t_lidar_2_left_cam, frame_map, ann, timestamp_to_index, gt_objects, visualize_pointclouds):
+    metrics = {}
+    frame_counter = 0
+
+    keys = list(frame_map)
+    for i, key in enumerate(frame_map):
+        pointcloud_filename = frame_map.get(key)
+        if pointcloud_filename.endswith(".pcd"):
+            timestamp_str = pointcloud_filename[:-4]
+        else:
+            timestamp_str = pointcloud_filename
+
+        timestamp = float(timestamp_str)
+
+        pointcloud_filename_2 = frame_map.get(keys[i+1])
+        if pointcloud_filename_2.endswith(".pcd"):
+            timestamp_str_2 = pointcloud_filename_2[:-4]
+        else:
+            timestamp_str_2 = pointcloud_filename_2
+
+        timestamp_2 = float(timestamp_str_2)
+
+        historic_pointcloud_filenames = [frame_map.get(keys[max(0, i-j)]) for j in range(1, 4)]
+
+        if i < 0: # Change this to skip some frames at the beginning if needed
+            continue
+        point_cloud_points = np.array(sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename))) # Shape (Nx3)
+
+        point_cloud_points_2 = np.array(sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename_2))) # Shape (Nx3)
+        historic_pcds = [torch.from_numpy(np.array(sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / filename)))).float().unsqueeze(0).cuda() for filename in historic_pointcloud_filenames]
+
+        # record GT data
+        dataset_frame_index = int(key)
+        figures_on_frame = ann.get_figures_on_frame(dataset_frame_index)
+        for figure in figures_on_frame:
+            if figure.parent_object.obj_class.name not in metrics:
+                metrics[figure.parent_object.obj_class.name] = {
+                    "Velocity Error": [],
+                    # "Absolute Component Wise Error": [],
+                    "Velocity Angular Error": [],
+                    "Weighted Velocity Angular Error": [],
+                    "GT Velocity Magnitudes": [], # This is used to compute the weighted velocity angular error (weighted by the gt velocity magnitude)
+                    "Obj Velocity Magnitudes": [],
+                    "Radial Error": [],
+                    "Tangential Error": [],
+                    "Velocity Magnitude Error": [],
+                    "GT Velocities": [],
+                    "Obj Velocities": [],
+                    "Radial Obj Velocities": [],
+                    "Radial GT Velocities": [],
+                    "Tangential Obj Velocities": [],
+                    "Tangential GT Velocities": [],
+                    "Frame ID": [],
+                }
+            object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
+            gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
+            gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
+            gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
+            metrics[object_type]["Tangential GT Velocities"].append(gt_tan_v)
+            metrics[object_type]["Radial GT Velocities"].append(gt_rad_v)
+            metrics[object_type]["GT Velocities"].append(gt_velocity)
+
+
+        # if (DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename).exists():
+        #     predicted_pcd = o3d.t.io.read_point_cloud(str(DATASET_PATH / "scene_1" / "predicted" / pointcloud_filename))
+        #     predicted_pcd = np.column_stack((
+        #         predicted_pcd.point.positions.numpy(),
+        #         predicted_pcd.point.vx.numpy(),
+        #         predicted_pcd.point.vy.numpy(),
+        #         predicted_pcd.point.vz.numpy(),
+        #     ))
+
+        #     transformed_predicted_pcd = transform_points(predicted_pcd, R_lidar_2_left_cam.T, -R_lidar_2_left_cam.T @ t_lidar_2_left_cam)
+
+        item = {
+            "pc0": torch.from_numpy(point_cloud_points).float().unsqueeze(0).cuda(),
+            "pc1": torch.from_numpy(point_cloud_points_2).float().unsqueeze(0).cuda(),
+            "gm0": torch.zeros(point_cloud_points.shape[0], dtype=torch.bool).unsqueeze(0).cuda(),
+            "gm1": torch.zeros(point_cloud_points_2.shape[0], dtype=torch.bool).unsqueeze(0).cuda(),
+            "pose0": torch.eye(4).unsqueeze(0).cuda(),
+            "pose1": torch.eye(4).unsqueeze(0).cuda(),
+        }
+        for j, historic_pcd in enumerate(historic_pcds):
+            item[f"pch{j+1}"] = historic_pcd
+            item[f"gmh{j+1}"] = torch.zeros(historic_pcd.shape[1], dtype=torch.bool).unsqueeze(0).cuda()
+            item[f"poseh{j+1}"] = torch.eye(4).unsqueeze(0).cuda()
+        with torch.no_grad():
+            batch, res_dict = model.run_model_wo_ground_data(item)
+
+        predicted = res_dict['flow'].cpu().numpy()
+        valid = res_dict['pc0_valid_point_idxes'].cpu().numpy()
+        
+        for figure in figures_on_frame:
+            object_geometry = figure.geometry
+            position = object_geometry.position
+            dimensions = object_geometry.dimensions
+
+            rotation = object_geometry.rotation  # Extract rotation vector
+
+            # Convert to np arrays because it's easier
+            rotation_vector = np.array([rotation.x, rotation.y, rotation.z]).astype(np.float32)
+            dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
+            position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
+
+            object_points, mask = extract_points_inside_bbox(point_cloud_points[valid], position_vec, dimension_vec, rotation_vector)
+            object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
+
+            # mask = np.linalg.norm(object_points[:,3:6], axis=1) > 0.01
+
+            if object_points.size == 0:
+                # The object likely moved out of range of our setup, skip these frames
+                # visualize_pointcloud_with_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
+                continue
+            if visualize_pointclouds:
+                visualize_points(object_points, f"Points in {figure.parent_object.obj_class.name} BBox of Predicted Frame {timestamp_to_index[str(timestamp)]}")
+                visualize_pointcloud_with_bbox(point_cloud_points, position_vec, dimension_vec, rotation_vector, f"Location of {figure.parent_object.obj_class.name} BBox in Predicted Frame {timestamp_to_index[str(timestamp)]}")
+
+            object_velocities = predicted[mask]
+            object_velocities = transform_points(object_velocities, R_lidar_2_left_cam, np.zeros(3)) # Only apply rotation to the velocity vectors, not translation
+            object_velocities = object_velocities / (timestamp_2 - timestamp) # convert from displacement to velocity
+            object_vx = np.mean(object_velocities[:,0])
+            object_vy = np.mean(object_velocities[:,1])
+            object_vz = np.mean(object_velocities[:,2])
+
+            object_velocity = np.array([object_vx, object_vy, object_vz])
+
+            object_centroid = np.mean(object_points[:, :3], axis=0)
+            # print(object_centroid)
+            # visualize_pointcloud_with_arrow(predicted_pcd, position_vec, dimension_vec, rotation_vector, object_centroid, object_velocity) # not working because not all in the same coordinate frame
+
+            mask = np.linalg.norm(point_cloud_points, axis=1) < 6
+            mask2 = np.linalg.norm(point_cloud_points, axis=1) > 1
+
+            object_type: str = figure.parent_object.obj_class.name # The name of the object type, eg. person, reflector
+            gt_velocity = gt_objects[object_type][timestamp_to_index[str(timestamp)]].velocity
+
+            metrics[object_type]["Frame ID"].append(frame_counter)
+            metrics[object_type]["Velocity Error"].append(np.linalg.norm(gt_velocity - object_velocity))
+            # errors[object_type]["Absolute Component Wise Error"].append(np.abs(gt_velocity - object_velocity))
+            metrics[object_type]["Velocity Angular Error"].append(np.arccos(np.dot(object_velocity, gt_velocity) / (np.linalg.norm(object_velocity) * np.linalg.norm(gt_velocity) + 1e-6))  * 180 / np.pi)
+            metrics[object_type]["Weighted Velocity Angular Error"].append(metrics[object_type]["Velocity Angular Error"][-1] * np.linalg.norm(gt_velocity))
+            metrics[object_type]["Obj Velocities"].append(object_velocity)
+            metrics[object_type]["GT Velocity Magnitudes"].append(np.linalg.norm(gt_velocity))
+
+            rad_v, tan_v = decompose_v(object_velocity, object_centroid)
+            gt_rad_v, gt_tan_v = decompose_v(gt_velocity, gt_objects[object_type][timestamp_to_index[str(timestamp)]].centroid)
+            
+            metrics[object_type]["Radial Obj Velocities"].append(rad_v)
+            metrics[object_type]["Tangential Obj Velocities"].append(tan_v)
+            metrics[object_type]["Radial Error"].append(np.linalg.norm(rad_v - gt_rad_v))
+            metrics[object_type]["Tangential Error"].append(np.linalg.norm(tan_v - gt_tan_v))
+            metrics[object_type]["Velocity Magnitude Error"].append(np.linalg.norm(object_velocity) - np.linalg.norm(gt_velocity))
+
+            # visualize_points(persons[timestamp_to_index[str(timestamp)]].points, f"GT Points Frame {timestamp_to_index[str(timestamp)]}")
+            # print(persons[timestamp_to_index[str(timestamp)]].centroid)
+            # visualize_pointcloud_with_arrow(np.concatenate((point_cloud_data[mask & mask2], persons[timestamp_to_index[str(timestamp)]].points)), position_vec, dimension_vec, rotation_vector, persons[timestamp_to_index[str(timestamp)]].centroid, gt_velocity) # not working because not all in the same coordinate frame
+            print(f'Frame {i}: {object_type} has velocity {gt_velocity}, pred: {object_velocity},'
+                    f'Velocity error: {metrics[object_type]["Velocity Error"][-1]},'
+                #   f'Component Wise: {errors[object_type]["Absolute Component Wise Error"][-1]},'
+                    f'Angular Error: {metrics[object_type]["Velocity Angular Error"][-1]}',
+                    f'Radial Error: {metrics[object_type]["Radial Error"][-1]}',
+                    f'Tangential Error: {metrics[object_type]["Tangential Error"][-1]}',
+                    f'Magnitude Error:{metrics[object_type]["Velocity Magnitude Error"][-1]}')
+
+        frame_counter += 1 # update frame counter to keep track of what frames have predicted data
+
+        if i >= len(gt_objects[next(iter(gt_objects))]) - 2: # Don't check the last frame because no gt velocity
+            break
+    
+    for object_type in metrics:
+        for metric in metrics[object_type]:
+            metrics[object_type][metric] = np.array(metrics[object_type][metric])
+
+    return metrics
 
 def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds):
     """
@@ -181,7 +370,13 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
 
     for i, key in enumerate(frame_map):
         pointcloud_filename = frame_map.get(key)
-        timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+        if pointcloud_filename.endswith(".pcd"):
+            timestamp_str = pointcloud_filename[:-4]
+        else:
+            timestamp_str = pointcloud_filename
+
+        timestamp = float(timestamp_str)
+
 
         if i < 0: # Change this to skip some frames at the beginning if needed
             continue
@@ -243,7 +438,7 @@ def compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2
                 dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
                 position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
 
-                object_points = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
+                object_points, _ = extract_points_inside_bbox(transformed_predicted_pcd, position_vec, dimension_vec, rotation_vector)
                 object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
 
                 # mask = np.linalg.norm(object_points[:,3:6], axis=1) > 0.01
@@ -332,7 +527,7 @@ def break_gaps_with_nan(x_data, y_data, threshold):
     y_new[np.setdiff1d(np.arange(len(y_new)), insert_indices)] = y_data
     return x_new, y_new
 
-def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
+def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False, scene_flow_model=None):
     ### LOAD THE DATASET
 
     # Path to the downloaded annotation JSON file
@@ -384,7 +579,12 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
             point_cloud_points = sly.pointcloud.read(str(DATASET_PATH / "scene_1" / "pointcloud" / pointcloud_filename)) # Shape (Nx3)
             point_cloud_data = point_cloud_points
 
-            timestamp = float(pointcloud_filename.removesuffix(".pcd"))
+            if pointcloud_filename.endswith(".pcd"):
+                timestamp_str = pointcloud_filename[:-4]
+            else:
+                timestamp_str = pointcloud_filename
+
+            timestamp = float(timestamp_str)
 
             if len(figures_on_frame) != 2:
                 raise RuntimeError("Expected only two figures")
@@ -402,7 +602,7 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
                 dimension_vec = np.array([dimensions.x, dimensions.y, dimensions.z]).astype(np.float32)
                 position_vec = np.array([position.x, position.y, position.z]).astype(np.float32)
 
-                object_points = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
+                object_points, _ = extract_points_inside_bbox(point_cloud_data, position_vec, dimension_vec, rotation_vector)
                 object_points = transform_points(object_points, R_lidar_2_left_cam, t_lidar_2_left_cam)
                 if visualize_pointclouds:
                     visualize_points(object_points, f'Pointcloud for {figure.parent_object.obj_class.name} in Frame {i}')
@@ -447,7 +647,10 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         with (SCRIPT_PATH / 'errors.pkl').open('rb') as file:
             metrics = pickle.load(file)
     else:
-        metrics = compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds)
+        if (scene_flow_model):
+            metrics = compute_gt_and_predicted_velocities_from_model(scene_flow_model, R_lidar_2_left_cam, t_lidar_2_left_cam, frame_map, ann, timestamp_to_index, gt_objects, visualize_pointclouds)
+        else:
+            metrics = compute_gt_and_predicted_velocities(frame_map, R_lidar_2_left_cam, t_lidar_2_left_cam, ann, timestamp_to_index, gt_objects, visualize_pointclouds)
         with (SCRIPT_PATH / 'errors.pkl').open('wb') as file:
             pickle.dump(metrics, file)
 
@@ -724,6 +927,22 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
         counter = 0
         plt.show()
 
+GLOBAL_ARGS = None
+@hydra.main(version_base=None, config_path="../../OpenSceneFlow/conf", config_name="eval")
+def hydra_main(cfg):
+    pl.seed_everything(cfg.seed, workers=True)
+    output_dir = HydraConfig.get().runtime.output_dir
+        
+    torch_load_ckpt = torch.load(cfg.checkpoint)
+    checkpoint_params = DictConfig(torch_load_ckpt["hyper_parameters"])
+    cfg.output = checkpoint_params.cfg.output + f"-e{torch_load_ckpt['epoch']}-{cfg.data_mode}-v{cfg.leaderboard_version}"
+    # replace output_dir ${old_output_dir} with ${output_dir}
+    output_dir = output_dir.replace(HydraConfig.get().runtime.output_dir.split('/')[-2], checkpoint_params.cfg.output.split('/')[-1])
+    cfg.model.update(checkpoint_params.cfg.model)
+    cfg.num_frames = cfg.model.target.get('num_frames', checkpoint_params.cfg.get('num_frames', cfg.get('num_frames', 2)))
+    
+    mymodel = ModelWrapper.load_from_checkpoint(cfg.checkpoint, cfg=cfg, eval=True).cuda().eval()
+    main(GLOBAL_ARGS.stop_after, GLOBAL_ARGS.visualize_pointclouds, GLOBAL_ARGS.force_recompute, mymodel)
 
 if __name__ == "__main__":
     # Read command line arguments
@@ -731,6 +950,17 @@ if __name__ == "__main__":
     parser.add_argument('--stop-after', type=int, default=-1, help='Stop processing after this many frames. By default, process all frames.')
     parser.add_argument('--visualize-pointclouds', action='store_true', help='Visualize point clouds and bounding boxes.')
     parser.add_argument('--force-recompute', action='store_true', help='Force recomputation of GTs even if precomputed files exist.')
-    args = parser.parse_args()
+    parser.add_argument('--use-scene-flow-model', action='store_true', help='Use scene flow model for velocity predictions instead of our pipeline.')
+    args, remaining = parser.parse_known_args()
 
-    main(args.stop_after, args.visualize_pointclouds, args.force_recompute)
+    # 3. Remove argparse flags from sys.argv so Hydra never sees them
+    sys.argv = [sys.argv[0]] + remaining
+
+    GLOBAL_ARGS = args
+
+    if (args.use_scene_flow_model):
+        print("Using scene flow model for velocity predictions")
+        hydra_main()
+    else:
+        print("Using our pipeline for velocity predictions")
+        main(args.stop_after, args.visualize_pointclouds, args.force_recompute, None)
