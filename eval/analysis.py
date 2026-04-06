@@ -460,14 +460,19 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False):
     for key in metrics[next(iter(metrics))]: # Each object type has the same keys
         overall_metrics[key] = np.concatenate([metrics[object_type][key] for object_type in metrics])
 
+    weight_mean_angular_error = np.sum(overall_metrics["Weighted Velocity Angular Error"]) / (np.sum(overall_metrics["GT Velocity Magnitudes"]) + 1e-6)
     print(f'AVE Overall: {np.mean(overall_metrics["Velocity Error"])} '
-        f' (std: {np.std(overall_metrics["Velocity Error"])}), '
+        f' (var: {np.var(overall_metrics["Velocity Error"])}), '
         # f' AAE: {np.mean(overall_errors["Absolute Component Wise Error"], axis=0)}'
         # f' (std: {np.std(overall_errors["Absolute Component Wise Error"], axis=0)}),'
         f'Mean Angular Error: {np.mean(overall_metrics["Velocity Angular Error"])}, ',
-        f'Weighted Mean Angular Error: {np.sum(overall_metrics["Weighted Velocity Angular Error"]) / (np.sum(overall_metrics["GT Velocity Magnitudes"]) + 1e-6)}, ',
+        f' (var: {np.var(overall_metrics["Velocity Angular Error"])}), ',
+        f'Weighted Mean Angular Error: {weight_mean_angular_error}, ',
+        f' (var: {np.sum(overall_metrics["GT Velocity Magnitudes"] * (overall_metrics["Velocity Angular Error"] - weight_mean_angular_error) ** 2) / (np.sum(overall_metrics["GT Velocity Magnitudes"]) + 1e-6)})', 
         f'Mean Radial Error: {np.mean(overall_metrics["Radial Error"])}, ',
+        f' (var: {np.var(overall_metrics["Radial Error"])}), '
         f'Mean Tangential Error: {np.mean(overall_metrics["Tangential Error"])}, ',
+        f' (var: {np.var(overall_metrics["Tangential Error"])}), '
         f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_metrics["Velocity Magnitude Error"])))}')
     
     # Create plots
