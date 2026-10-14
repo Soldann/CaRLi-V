@@ -676,7 +676,12 @@ def main(stop_after=-1, visualize_pointclouds=False, force_recompute=False, scen
         f' (var: {np.var(overall_metrics["Radial Error"])}), '
         f'Mean Tangential Error: {np.mean(overall_metrics["Tangential Error"])}, ',
         f' (var: {np.var(overall_metrics["Tangential Error"])}), '
-        f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_metrics["Velocity Magnitude Error"])))}')
+        f' Magnitude RMSE: {np.sqrt(np.mean(np.square(overall_metrics["Velocity Magnitude Error"])))}',
+        f'Median Overall: {np.median(overall_metrics["Velocity Error"])} ',
+        f'Median Tangential Error: {np.median(overall_metrics["Tangential Error"])}, ',
+        f'Median Radial Error: {np.median(overall_metrics["Radial Error"])}, ',
+        f'Median Angular Error: {np.median(overall_metrics["Velocity Angular Error"])}, '
+        )
     
     # Create plots
     def _shade_gaps(ax, frames, threshold):
